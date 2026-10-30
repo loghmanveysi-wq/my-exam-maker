@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -124,6 +125,7 @@ class Hdr {
         if (this['subject'].isNotEmpty) 'درس: ${this['subject']}',
       ].where((e) => e.isNotEmpty).toList();
 
+  // ستون راست سربرگ: مشخصات دانش‌آموز
   List<String> get rightRows => [
         'نام و نام خانوادگی: ................',
         'نام پدر: ................',
@@ -132,6 +134,7 @@ class Hdr {
         'پایه: ${this['grade']}      نام دبیر: ${this['teacher']}',
       ];
 
+  // ستون چپ سربرگ: مشخصات امتحان
   List<String> get leftRows => [
         'نوبت امتحان: ${this['round']}',
         'تاریخ امتحان: ${this['date']}',
@@ -157,8 +160,10 @@ String pp(String inner, {bool center = false}) =>
     '<w:p><w:pPr><w:bidi/><w:spacing w:before="40" w:after="40"/>'
     '${center ? '<w:jc w:val="center"/>' : ''}</w:pPr>$inner</w:p>';
 
-String tcX(String inner, int w, {String vm = '', String va = 'top'}) =>
-    '<w:tc><w:tcPr><w:tcW w:w="$w" w:type="dxa"/>$vm<w:vAlign w:val="$va"/></w:tcPr>$inner</w:tc>';
+String tcX(String inner, int w,
+        {String vm = '', bool td = false, String va = 'top'}) =>
+    '<w:tc><w:tcPr><w:tcW w:w="$w" w:type="dxa"/>$vm'
+    '${td ? '<w:textDirection w:val="btLr"/>' : ''}<w:vAlign w:val="$va"/></w:tcPr>$inner</w:tc>';
 
 String trX(String cells, {int h = 0}) =>
     '<w:tr>${h > 0 ? '<w:trPr><w:cantSplit/><w:trHeight w:val="$h" w:hRule="atLeast"/></w:trPr>' : ''}$cells</w:tr>';
@@ -173,6 +178,10 @@ String tblPr(int inner) =>
     '<w:insideV w:val="single" w:sz="$inner" w:space="0" w:color="000000"/>'
     '</w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr>';
 
+// اگر متن طولانی بود، اندازه فونت کم می‌شود
+int fitSz(String s, int sz, int n) =>
+    s.length <= n ? sz : math.max(12, (sz * n / s.length).floor());
+
 PreferredSizeWidget bar(String t, {List<Widget>? actions}) => AppBar(
       foregroundColor: Colors.white,
       title: Text(t, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -182,6 +191,25 @@ PreferredSizeWidget bar(String t, {List<Widget>? actions}) => AppBar(
         ),
       ),
       actions: actions,
+    );
+
+Widget actBtn(IconData i, String label, VoidCallback f) => InkWell(
+      onTap: f,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(i, size: 24, color: Colors.white),
+            const SizedBox(height: 2),
+            Text(label,
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
     );
 
 Widget field(TextEditingController c, String label,
@@ -284,31 +312,117 @@ class _HomeState extends State<Home> {
     }
   }
 
-  // ---------------- خروجی PDF ----------------
+  // ---------------- تحویل فایل: ذخیره مستقیم یا اشتراک‌گذاری ----------------
+  Future<void> deliver(Uint8List bytes, String name, bool pdf) async {
+    await showModalBottomSheet(
+      context: context,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.download, color: kBlue),
+            title: const Text('ذخیره در گوشی (دانلود مستقیم)'),
+            onTap: () async {
+              Navigator.pop(c);
+              try {
+                final p = await FlutterFileDialog.saveFile(
+                    params: SaveFileDialogParams(data: bytes, fileName: name));
+                if (p != null) msg('فایل ذخیره شد');
+              } catch (e) {
+                msg('خطا در ذخیره: $e');
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.share, color: kBlue),
+            title: Text(pdf ? 'اشتراک‌گذاری / چاپ' : 'اشتراک‌گذاری'),
+            onTap: () async {
+              Navigator.pop(c);
+              try {
+                if (pdf) {
+                  await Printing.sharePdf(bytes: bytes, filename: name);
+                } else {
+                  final dir = await getTemporaryDirectory();
+                  final f = File('${dir.path}/$name');
+                  await f.writeAsBytes(bytes, flush: true);
+                  await Share.shareXFiles([
+                    XFile(f.path,
+                        mimeType:
+                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                  ]);
+                }
+              } catch (e) {
+                msg('خطا: $e');
+              }
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
   Future<void> exportPdf() async {
+    final b = await buildPdf();
+    if (b != null) await deliver(b, 'azmoon.pdf', true);
+  }
+
+  Future<void> exportDocx() async {
+    final b = await buildDocx();
+    if (b != null) await deliver(b, 'azmoon.docx', false);
+  }
+
+  // ---------------- ساخت PDF ----------------
+  Future<Uint8List?> buildPdf() async {
     if (qs.isEmpty) {
       msg('ابتدا سؤال اضافه کنید');
-      return;
+      return null;
     }
-    final data = await rootBundle.load('assets/fonts/Vazir.ttf');
-    final font = pw.Font.ttf(data);
-    final doc = pw.Document(theme: pw.ThemeData.withFont(base: font, bold: font));
+    Future<pw.Font> lf(String a) async => pw.Font.ttf(await rootBundle.load(a));
+    pw.Font fBase;
+    try {
+      fBase = await lf('assets/fonts/BNazanin.ttf');
+    } catch (_) {
+      fBase = await lf('assets/fonts/Vazir.ttf');
+    }
+    pw.Font fBold;
+    try {
+      fBold = await lf('assets/fonts/BNazaninBold.ttf');
+    } catch (_) {
+      fBold = fBase;
+    }
+    final doc =
+        pw.Document(theme: pw.ThemeData.withFont(base: fBase, bold: fBold));
 
     pw.Widget t(String s,
-            {double size = 11, pw.TextAlign a = pw.TextAlign.right}) =>
+            {double size = 12,
+            pw.TextAlign a = pw.TextAlign.right,
+            bool bold = false}) =>
         pw.Text(s,
             textDirection: pw.TextDirection.rtl,
             textAlign: a,
-            style: pw.TextStyle(fontSize: size));
+            style: pw.TextStyle(
+                fontSize: size,
+                fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal));
+
+    // متنی که اگر از سلول بزرگ‌تر شد، خودکار کوچک می‌شود
+    pw.Widget fit(String s,
+            {double size = 12,
+            bool b = false,
+            pw.Alignment al = pw.Alignment.centerRight,
+            pw.TextAlign ta = pw.TextAlign.right}) =>
+        pw.FittedBox(
+          fit: pw.BoxFit.scaleDown,
+          alignment: al,
+          child: t(s, size: size, a: ta, bold: b),
+        );
 
     final side = pw.BorderSide(width: 0.8);
 
     pw.Widget hc(String s, {bool last = false}) => pw.Container(
-          height: 24,
+          height: 26,
           alignment: pw.Alignment.centerRight,
           padding: const pw.EdgeInsets.symmetric(horizontal: 6),
           decoration: last ? null : pw.BoxDecoration(border: pw.Border(bottom: side)),
-          child: t(s, size: 10.5),
+          child: fit(s, size: 12, b: true),
         );
 
     pw.Widget col(List<String> rows) => pw.Column(
@@ -321,21 +435,28 @@ class _HomeState extends State<Home> {
         );
 
     final mid = pw.Container(
-      height: 120,
+      height: 130,
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4),
       decoration: pw.BoxDecoration(border: pw.Border(left: side, right: side)),
       child: pw.Column(
         mainAxisAlignment: pw.MainAxisAlignment.center,
         mainAxisSize: pw.MainAxisSize.min,
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
         children: [
           for (final l in hdr.midLines)
             pw.Padding(
               padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
-              child: t(l, size: 9.5, a: pw.TextAlign.center),
+              child: fit(l,
+                  size: 11,
+                  b: true,
+                  al: pw.Alignment.center,
+                  ta: pw.TextAlign.center),
             ),
         ],
       ),
     );
 
+    // چپ: مشخصات امتحان | وسط: اداره/آموزشگاه | راست: مشخصات دانش‌آموز
     final header = pw.Container(
       decoration: pw.BoxDecoration(border: pw.Border.all(width: 1.5)),
       child: pw.Row(children: [
@@ -345,21 +466,31 @@ class _HomeState extends State<Home> {
       ]),
     );
 
-    pw.Widget hcell(String s) => pw.Container(
-          padding: const pw.EdgeInsets.all(4),
+    pw.Widget vcell(String s) => pw.Container(
+          height: 44,
           alignment: pw.Alignment.center,
-          child: t(s, size: 11, a: pw.TextAlign.center),
+          child: pw.Transform.rotateBox(
+            angle: math.pi / 2,
+            child: t(s, size: 11, a: pw.TextAlign.center, bold: true),
+          ),
         );
 
     final rows = <pw.TableRow>[
-      pw.TableRow(
-          repeat: true, children: [hcell('بارم'), hcell('متن سوالات'), hcell('ردیف')]),
+      pw.TableRow(repeat: true, children: [
+        vcell('بارم'),
+        pw.Container(
+          height: 44,
+          alignment: pw.Alignment.center,
+          child: t('متن سوالات', size: 13, a: pw.TextAlign.center, bold: true),
+        ),
+        vcell('ردیف'),
+      ]),
     ];
 
     for (var i = 0; i < qs.length; i++) {
       final q = qs[i];
       final content = <pw.Widget>[];
-      if (q.text.isNotEmpty) content.add(t(q.text, size: 11.5));
+      if (q.text.isNotEmpty) content.add(t(q.text, size: 13));
       if (q.image != null && File(q.image!).existsSync()) {
         content.add(pw.SizedBox(height: 4));
         content.add(pw.Center(
@@ -376,24 +507,25 @@ class _HomeState extends State<Home> {
         if (short) {
           content.add(pw.Row(children: [
             for (var k = 3; k >= 0; k--)
-              pw.Expanded(child: t('${kLabels[k]}) ${q.options[k]}', size: 10.5)),
+              pw.Expanded(child: t('${kLabels[k]}) ${q.options[k]}', size: 12)),
           ]));
         } else {
           for (var k = 0; k < 4; k++) {
-            content.add(t('${kLabels[k]}) ${q.options[k]}', size: 10.5));
+            content.add(t('${kLabels[k]}) ${q.options[k]}', size: 12));
           }
         }
       } else if (q.type == 'tf') {
         content.add(pw.SizedBox(height: 4));
-        content.add(t('(    ) صحیح          (    ) غلط', size: 10.5));
+        content.add(t('(    ) صحیح          (    ) غلط', size: 12));
       } else if (q.type == 'desc' && q.image == null) {
         content.add(pw.SizedBox(height: 45));
       }
       rows.add(pw.TableRow(children: [
         pw.Container(
           alignment: pw.Alignment.topCenter,
-          padding: const pw.EdgeInsets.all(6),
-          child: t(num2(q.points), a: pw.TextAlign.center),
+          padding: const pw.EdgeInsets.all(3),
+          child: fit(num2(q.points),
+              size: 12, al: pw.Alignment.center, ta: pw.TextAlign.center),
         ),
         pw.Container(
           alignment: pw.Alignment.topRight,
@@ -406,18 +538,20 @@ class _HomeState extends State<Home> {
         ),
         pw.Container(
           alignment: pw.Alignment.center,
-          padding: const pw.EdgeInsets.all(6),
-          child: t(fa('${i + 1}'), a: pw.TextAlign.center),
+          padding: const pw.EdgeInsets.all(2),
+          child: fit(fa('${i + 1}'),
+              size: 12, al: pw.Alignment.center, ta: pw.TextAlign.center),
         ),
       ]));
     }
 
+    // ستون‌ها از چپ به راست: بارم | متن سوالات | ردیف
     final table = pw.Table(
       border: pw.TableBorder.all(width: 1),
       columnWidths: {
-        0: const pw.FixedColumnWidth(42),
+        0: const pw.FixedColumnWidth(36),
         1: const pw.FlexColumnWidth(),
-        2: const pw.FixedColumnWidth(36),
+        2: const pw.FixedColumnWidth(28),
       },
       defaultVerticalAlignment: pw.TableCellVerticalAlignment.full,
       children: rows,
@@ -425,19 +559,17 @@ class _HomeState extends State<Home> {
 
     doc.addPage(pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
-      textDirection: pw.TextDirection.rtl,
       margin: const pw.EdgeInsets.all(28),
       build: (c) => [header, table],
     ));
-    final bytes = await doc.save();
-    await Printing.sharePdf(bytes: bytes, filename: 'azmoon.pdf');
+    return Uint8List.fromList(await doc.save());
   }
 
-  // ---------------- خروجی Word ----------------
-  Future<void> exportDocx() async {
+  // ---------------- ساخت Word ----------------
+  Future<Uint8List?> buildDocx() async {
     if (qs.isEmpty) {
       msg('ابتدا سؤال اضافه کنید');
-      return;
+      return null;
     }
     final media = <String, List<int>>{};
     final rels = StringBuffer();
@@ -471,9 +603,10 @@ class _HomeState extends State<Home> {
 
     final body = StringBuffer();
 
-    // سربرگ
-    final midParas =
-        hdr.midLines.map((l) => pp(rp(l, sz: 18, b: true), center: true)).join();
+    // سربرگ (ستون اول جدول = سمت راست صفحه)
+    final midParas = hdr.midLines
+        .map((l) => pp(rp(l, sz: fitSz(l, 18, 40), b: true), center: true))
+        .join();
     final right = hdr.rightRows;
     final left = hdr.leftRows;
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
@@ -483,9 +616,11 @@ class _HomeState extends State<Home> {
           ? tcX(midParas, 4100, vm: '<w:vMerge w:val="restart"/>', va: 'center')
           : tcX('<w:p/>', 4100, vm: '<w:vMerge/>');
       body.write(trX(
-        tcX(pp(rp(right[i], sz: 20, b: true)), 3300, va: 'center') +
+        tcX(pp(rp(right[i], sz: fitSz(right[i], 20, 26), b: true)), 3300,
+                va: 'center') +
             midCell +
-            tcX(pp(rp(left[i], sz: 20, b: true)), 3300, va: 'center'),
+            tcX(pp(rp(left[i], sz: fitSz(left[i], 20, 26), b: true)), 3300,
+                va: 'center'),
         h: 420,
       ));
     }
@@ -493,38 +628,40 @@ class _HomeState extends State<Home> {
     body.write(
         '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>');
 
-    // جدول سؤال‌ها
+    // جدول سؤال‌ها (ردیف | متن | بارم)
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
-        '<w:gridCol w:w="700"/><w:gridCol w:w="8900"/><w:gridCol w:w="1100"/></w:tblGrid>');
+        '<w:gridCol w:w="560"/><w:gridCol w:w="9440"/><w:gridCol w:w="700"/></w:tblGrid>');
     body.write(trX(
-        tcX(pp(rp('ردیف', sz: 20, b: true), center: true), 700, va: 'center') +
-            tcX(pp(rp('متن سوالات', sz: 20, b: true), center: true), 8900,
+        tcX(pp(rp('ردیف', sz: 18, b: true), center: true), 560,
+                td: true, va: 'center') +
+            tcX(pp(rp('متن سوالات', sz: 22, b: true), center: true), 9440,
                 va: 'center') +
-            tcX(pp(rp('بارم', sz: 20, b: true), center: true), 1100, va: 'center'),
-        h: 380));
+            tcX(pp(rp('بارم', sz: 18, b: true), center: true), 700,
+                td: true, va: 'center'),
+        h: 800));
 
     for (var i = 0; i < qs.length; i++) {
       final q = qs[i];
       final c = StringBuffer();
       if (q.text.isNotEmpty) {
         for (final l in q.text.split('\n')) {
-          c.write(pp(rp(l, sz: 22)));
+          c.write(pp(rp(l, sz: 24)));
         }
       }
       final hasImg = q.image != null && File(q.image!).existsSync();
       if (hasImg) c.write(await drawing(q.image!));
       if (q.type == 'mc' && q.options.any((o) => o.isNotEmpty)) {
         for (var k = 0; k < 4; k++) {
-          c.write(pp(rp('${kLabels[k]}) ${q.options[k]}', sz: 21)));
+          c.write(pp(rp('${kLabels[k]}) ${q.options[k]}', sz: 22)));
         }
       } else if (q.type == 'tf') {
-        c.write(pp(rp('(     ) صحیح          (     ) غلط', sz: 21)));
+        c.write(pp(rp('(     ) صحیح          (     ) غلط', sz: 22)));
       }
       if (c.isEmpty) c.write('<w:p/>');
       body.write(trX(
-        tcX(pp(rp(fa('${i + 1}'), sz: 22), center: true), 700, va: 'center') +
-            tcX(c.toString(), 8900) +
-            tcX(pp(rp(num2(q.points), sz: 22), center: true), 1100),
+        tcX(pp(rp(fa('${i + 1}'), sz: 22), center: true), 560, va: 'center') +
+            tcX(c.toString(), 9440) +
+            tcX(pp(rp(num2(q.points), sz: 22), center: true), 700),
         h: (q.type == 'desc' && !hasImg) ? 1400 : 600,
       ));
     }
@@ -543,7 +680,8 @@ class _HomeState extends State<Home> {
         '<w:pgMar w:top="567" w:right="567" w:bottom="567" w:left="567" w:header="400" w:footer="400" w:gutter="0"/>'
         '<w:bidi/></w:sectPr></w:body></w:document>';
 
-    const contentTypes = '$xmlHead<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    const contentTypes =
+        '$xmlHead<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
         '<Default Extension="png" ContentType="image/png"/>'
@@ -551,11 +689,13 @@ class _HomeState extends State<Home> {
         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         '</Types>';
 
-    const rootRels = '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    const rootRels =
+        '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
         '</Relationships>';
 
-    final docRels = '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">$rels</Relationships>';
+    final docRels =
+        '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">$rels</Relationships>';
 
     final arc = Archive();
     void add(String n, List<int> b) => arc.addFile(ArchiveFile(n, b.length, b));
@@ -566,28 +706,16 @@ class _HomeState extends State<Home> {
     media.forEach((k, v) => add('word/media/$k', v));
 
     final z = ZipEncoder().encode(arc) as List<int>;
-    final dir = await getTemporaryDirectory();
-    final f = File('${dir.path}/azmoon.docx');
-    await f.writeAsBytes(z, flush: true);
-    await Share.shareXFiles([
-      XFile(f.path,
-          mimeType:
-              'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-    ]);
+    return Uint8List.fromList(z);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: bar('آزمون بساز', actions: [
-        IconButton(
-            icon: const Icon(Icons.description),
-            tooltip: 'خروجی Word',
-            onPressed: exportDocx),
-        IconButton(
-            icon: const Icon(Icons.picture_as_pdf),
-            tooltip: 'خروجی PDF',
-            onPressed: exportPdf),
+        actBtn(Icons.description, 'ورد', exportDocx),
+        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),
+        const SizedBox(width: 8),
       ]),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: kBlue,
