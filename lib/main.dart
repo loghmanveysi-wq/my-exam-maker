@@ -253,8 +253,8 @@ class _HomeState extends State<Home> {
       pw.Container(
         padding: const pw.EdgeInsets.all(8),
         decoration: pw.BoxDecoration(border: pw.Border.all(width: 1)),
-        child: pw.Row(textDirection: pw.TextDirection.rtl, children: [
-          pw.SizedBox(width: 60, height: 60, child: logoW),
+        child: pw.Row(children: [
+          pw.SizedBox(width: 60),
           pw.Expanded(
             child: pw.Column(children: [
               if (hdr.org.isNotEmpty) t(hdr.org, size: 14, a: pw.TextAlign.center),
@@ -262,18 +262,18 @@ class _HomeState extends State<Home> {
               t(hdr.title, size: 18, a: pw.TextAlign.center),
             ]),
           ),
-          pw.SizedBox(width: 60),
+          pw.SizedBox(width: 60, height: 60, child: logoW),
         ]),
       ),
-      pw.Row(textDirection: pw.TextDirection.rtl, children: [
-        cell('درس', hdr.subject),
-        cell('پایه', hdr.grade),
+      pw.Row(children: [
         cell('دبیر', hdr.teacher),
+        cell('پایه', hdr.grade),
+        cell('درس', hdr.subject),
       ]),
-      pw.Row(textDirection: pw.TextDirection.rtl, children: [
-        cell('تاریخ', hdr.date),
-        cell('مدت', hdr.duration),
+      pw.Row(children: [
         cell('نام و نام خانوادگی', ''),
+        cell('مدت', hdr.duration),
+        cell('تاریخ', hdr.date),
       ]),
       pw.SizedBox(height: 6),
       pw.Center(
