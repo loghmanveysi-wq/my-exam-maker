@@ -1152,11 +1152,11 @@ class _HomeState extends State<Home> {
     );
 
     pw.Widget vcell(String s) => pw.Container(
-          height: 44,
+          height: 28,
           alignment: pw.Alignment.center,
           child: pw.Transform.rotateBox(
             angle: math.pi / 2,
-            child: t(s, size: 11, a: pw.TextAlign.center, bold: true),
+            child: t(s, size: 8, a: pw.TextAlign.center, bold: true),
           ),
         );
 
@@ -1164,9 +1164,9 @@ class _HomeState extends State<Home> {
       pw.TableRow(repeat: true, children: [
         vcell('بارم'),
         pw.Container(
-          height: 44,
+          height: 28,
           alignment: pw.Alignment.center,
-          child: t('متن سوالات', size: 13, a: pw.TextAlign.center, bold: true),
+          child: t('متن سوالات', size: 11, a: pw.TextAlign.center, bold: true),
         ),
         vcell('ردیف'),
       ]),
@@ -1183,9 +1183,15 @@ class _HomeState extends State<Home> {
       }
       for (final f in fxs[i]) {
         content.add(pw.SizedBox(height: 3));
-        content.add(pw.Center(
-          child: pw.Image(pw.MemoryImage(f.bytes),
-              width: f.w * kFxScale, height: f.h * kFxScale, fit: pw.BoxFit.fill),
+        content.add(pw.Align(
+          alignment: pw.Alignment.centerLeft,
+          child: pw.Padding(
+            padding: const pw.EdgeInsets.only(left: 8),
+            child: pw.Image(pw.MemoryImage(f.bytes),
+                width: f.w * kFxScale,
+                height: f.h * kFxScale,
+                fit: pw.BoxFit.fill),
+          ),
         ));
       }
 
@@ -1311,14 +1317,15 @@ class _HomeState extends State<Home> {
     final rels = StringBuffer();
     var imgId = 0;
 
-    String addPic(List<int> bytes, int cx, int cy, String jc) {
+    String addPic(List<int> bytes, int cx, int cy, String jc, {int ind = 0}) {
       imgId++;
       final ext = (bytes.length > 1 && bytes[0] == 0x89) ? 'png' : 'jpeg';
       final name = 'image$imgId.$ext';
       media[name] = bytes;
       rels.write(
           '<Relationship Id="rIdImg$imgId" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/$name"/>');
-      return '<w:p><w:pPr><w:spacing w:before="60" w:after="60"/><w:jc w:val="$jc"/></w:pPr>'
+      return '<w:p><w:pPr><w:spacing w:before="60" w:after="60"/>'
+          '${ind > 0 ? '<w:ind w:left="$ind"/>' : ''}<w:jc w:val="$jc"/></w:pPr>'
           '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
           '<wp:extent cx="$cx" cy="$cy"/><wp:docPr id="$imgId" name="Picture $imgId"/>'
           '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
@@ -1361,13 +1368,13 @@ class _HomeState extends State<Home> {
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
         '<w:gridCol w:w="560"/><w:gridCol w:w="9620"/><w:gridCol w:w="520"/></w:tblGrid>');
     body.write(trX(
-        tcX(pp(rp('ردیف', sz: 18, b: true), center: true), 560,
+        tcX(pp(rp('ردیف', sz: 14, b: true), center: true), 560,
                 td: true, va: 'center') +
-            tcX(pp(rp('متن سوالات', sz: 22, b: true), center: true), 9620,
+            tcX(pp(rp('متن سوالات', sz: 20, b: true), center: true), 9620,
                 va: 'center') +
-            tcX(pp(rp('بارم', sz: 18, b: true), center: true), 520,
+            tcX(pp(rp('بارم', sz: 14, b: true), center: true), 520,
                 td: true, va: 'center'),
-        h: 800));
+        h: 520));
 
     for (var i = 0; i < qs.length; i++) {
       final q = qs[i];
@@ -1382,7 +1389,8 @@ class _HomeState extends State<Home> {
       }
       for (final f in fxs[i]) {
         c.write(addPic(f.bytes, (f.w * kFxScale * 12700).round(),
-            (f.h * kFxScale * 12700).round(), 'center'));
+            (f.h * kFxScale * 12700).round(), 'left',
+            ind: 160));
       }
       if (q.image != null && File(q.image!).existsSync()) {
         final sz = await imgSize(q.image!);
