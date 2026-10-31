@@ -17,6 +17,7 @@ dependencies:
   archive: any
   share_plus: ^10.1.4
   flutter_file_dialog: ^3.0.2
+  flutter_math_fork: ^0.7.2
 
 flutter:
   uses-material-design: true
