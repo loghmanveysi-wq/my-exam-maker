@@ -2,10 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
+import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -18,55 +21,135 @@ void main() => runApp(const App());
 
 const kBlue = Color(0xFF1565C0);
 const kLabels = ['الف', 'ب', 'ج', 'د'];
+const kLatin = ['A', 'B', 'C', 'D'];
+const kCm = 28.3465; // هر سانتی‌متر چند پوینت
 
+// ---------------- اعداد ----------------
 String fa(String s) {
   const e = '0123456789';
   const f = '۰۱۲۳۴۵۶۷۸۹';
   for (var i = 0; i < 10; i++) {
     s = s.replaceAll(e[i], f[i]);
   }
-  return s.replaceAll('.', '٫');
+  return s;
 }
 
-String num2(double p) => fa(p % 1 == 0 ? p.toInt().toString() : p.toString());
+// نقطه اعشار به اسلش تبدیل می‌شود: ۲/۵
+String num2(double p) =>
+    fa(p % 1 == 0 ? p.toInt().toString() : p.toString()).replaceAll('.', '/');
 
+String toEn(String s) {
+  const f = '۰۱۲۳۴۵۶۷۸۹';
+  const a = '٠١٢٣٤٥٦٧٨٩';
+  for (var i = 0; i < 10; i++) {
+    s = s.replaceAll(f[i], '$i').replaceAll(a[i], '$i');
+  }
+  return s
+      .replaceAll('٫', '.')
+      .replaceAll('/', '.')
+      .replaceAll(',', '.')
+      .replaceAll('،', '.');
+}
+
+// جهت متن: اگر اولین حرف مهم فارسی/عربی بود راست‌به‌چپ، اگر انگلیسی بود چپ‌به‌راست
+bool isRtl(String s) {
+  for (final r in s.runes) {
+    if ((r >= 0x0600 && r <= 0x06FF) ||
+        (r >= 0x0750 && r <= 0x077F) ||
+        (r >= 0xFB50 && r <= 0xFDFF) ||
+        (r >= 0xFE70 && r <= 0xFEFF)) {
+      return true;
+    }
+    if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) return false;
+  }
+  return true;
+}
+
+// ---------------- انتخاب تصویر (هر فرمتی) ----------------
 Future<String?> pickImage() async {
   final x = await ImagePicker()
       .pickImage(source: ImageSource.gallery, maxWidth: 1600, imageQuality: 85);
   if (x == null) return null;
+  Uint8List bytes = await x.readAsBytes();
+  var ext = 'png';
+  final isJpg = bytes.length > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8;
+  final isPng = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50;
+  if (isJpg) {
+    ext = 'jpg';
+  } else if (!isPng) {
+    // webp, gif, bmp, ... را به PNG تبدیل می‌کنیم
+    final im = await decodeImageFromList(bytes);
+    final bd = await im.toByteData(format: ui.ImageByteFormat.png);
+    if (bd == null) return null;
+    bytes = bd.buffer.asUint8List();
+  }
   final dir = await getApplicationDocumentsDirectory();
-  final path = '${dir.path}/img_${DateTime.now().microsecondsSinceEpoch}.jpg';
-  await x.saveTo(path);
+  final path = '${dir.path}/img_${DateTime.now().microsecondsSinceEpoch}.$ext';
+  await File(path).writeAsBytes(bytes, flush: true);
   return path;
 }
+
+Future<Size?> imgSize(String path) async {
+  try {
+    final im = await decodeImageFromList(await File(path).readAsBytes());
+    return Size(im.width.toDouble(), im.height.toDouble());
+  } catch (_) {
+    return null;
+  }
+}
+
+// تصویر فرمول
+class Fx {
+  final Uint8List bytes;
+  final double w, h; // اندازه منطقی (فونت ۳۰)
+  Fx(this.bytes, this.w, this.h);
+}
+
+const kFxScale = 13 / 30; // فرمول با فونت حدود ۱۳ پوینت چاپ می‌شود
 
 // ---------------- مدل سؤال ----------------
 class Q {
   String type; // mc, tf, desc
   String text;
+  String formula;
   List<String> options;
   double points;
   String? image;
+  double imgW; // سانتی‌متر
+  double imgH; // سانتی‌متر
+  String imgAlign; // l, c, r
   Q({
     required this.type,
     required this.text,
+    this.formula = '',
     List<String>? options,
     this.points = 1,
     this.image,
+    this.imgW = 10,
+    this.imgH = 6,
+    this.imgAlign = 'c',
   }) : options = options ?? ['', '', '', ''];
   Map<String, dynamic> toJson() => {
         'type': type,
         'text': text,
+        'formula': formula,
         'options': options,
         'points': points,
         'image': image,
+        'imgW': imgW,
+        'imgH': imgH,
+        'imgAlign': imgAlign,
       };
   factory Q.fromJson(Map<String, dynamic> j) => Q(
         type: j['type'],
-        text: j['text'],
+        text: j['text'] ?? '',
+        formula: j['formula'] ?? '',
         options: List<String>.from(j['options']),
         points: (j['points'] as num).toDouble(),
         image: j['image'],
+        imgW: (j['imgW'] as num?)?.toDouble() ?? 10,
+        imgH: (j['imgH'] as num?)?.toDouble() ?? 6,
+        imgAlign: j['imgAlign'] ?? 'c',
       );
 }
 
@@ -151,13 +234,13 @@ String typeName(String t) =>
 String esc(String s) =>
     s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
-String rp(String s, {int sz = 22, bool b = false}) =>
+String rp(String s, {int sz = 22, bool b = false, bool rtl = true}) =>
     '<w:r><w:rPr><w:rFonts w:ascii="Tahoma" w:hAnsi="Tahoma" w:cs="Tahoma"/>'
-    '${b ? '<w:b/><w:bCs/>' : ''}<w:sz w:val="$sz"/><w:szCs w:val="$sz"/><w:rtl/></w:rPr>'
+    '${b ? '<w:b/><w:bCs/>' : ''}<w:sz w:val="$sz"/><w:szCs w:val="$sz"/>${rtl ? '<w:rtl/>' : ''}</w:rPr>'
     '<w:t xml:space="preserve">${esc(s)}</w:t></w:r>';
 
-String pp(String inner, {bool center = false}) =>
-    '<w:p><w:pPr><w:bidi/><w:spacing w:before="40" w:after="40"/>'
+String pp(String inner, {bool center = false, bool rtl = true}) =>
+    '<w:p><w:pPr>${rtl ? '<w:bidi/>' : ''}<w:spacing w:before="40" w:after="40"/>'
     '${center ? '<w:jc w:val="center"/>' : ''}</w:pPr>$inner</w:p>';
 
 String tcX(String inner, int w,
@@ -289,6 +372,18 @@ class _HomeState extends State<Home> {
   void msg(String s) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s)));
 
+  // نام فایل: درس + پایه
+  String baseName() {
+    final p = [hdr['subject'], hdr['grade']]
+        .where((e) => e.trim().isNotEmpty)
+        .join(' ');
+    final s = p
+        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '')
+        .trim()
+        .replaceAll(RegExp(r'\s+'), '_');
+    return s.isEmpty ? 'azmoon' : s;
+  }
+
   Future<void> edit([int? i]) async {
     final r = await Navigator.push<Q>(context,
         MaterialPageRoute(builder: (_) => Editor(q: i == null ? null : qs[i])));
@@ -310,6 +405,63 @@ class _HomeState extends State<Home> {
       setState(() => hdr = r);
       save();
     }
+  }
+
+  // ---------------- تبدیل فرمول به تصویر ----------------
+  Future<Fx?> renderTex(String tex) async {
+    final key = GlobalKey();
+    final entry = OverlayEntry(
+      builder: (_) => Positioned(
+        left: -5000,
+        top: 0,
+        child: UnconstrainedBox(
+          child: Directionality(
+            textDirection: TextDirection.ltr,
+            child: RepaintBoundary(
+              key: key,
+              child: Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(4),
+                child: Math.tex(tex,
+                    textStyle:
+                        const TextStyle(fontSize: 30, color: Colors.black)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    Overlay.of(context).insert(entry);
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 150));
+      await WidgetsBinding.instance.endOfFrame;
+      final ro = key.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (ro == null) return null;
+      final im = await ro.toImage(pixelRatio: 3);
+      final bd = await im.toByteData(format: ui.ImageByteFormat.png);
+      if (bd == null) return null;
+      return Fx(bd.buffer.asUint8List(), im.width / 3, im.height / 3);
+    } catch (_) {
+      return null;
+    } finally {
+      entry.remove();
+    }
+  }
+
+  Future<List<List<Fx>>> renderAll() async {
+    final out = <List<Fx>>[];
+    for (final q in qs) {
+      final l = <Fx>[];
+      for (final line in q.formula.split('\n')) {
+        final s = line.trim();
+        if (s.isEmpty) continue;
+        final f = await renderTex(s);
+        if (f != null) l.add(f);
+      }
+      out.add(l);
+    }
+    return out;
   }
 
   // ---------------- تحویل فایل: ذخیره مستقیم یا اشتراک‌گذاری ----------------
@@ -362,12 +514,12 @@ class _HomeState extends State<Home> {
 
   Future<void> exportPdf() async {
     final b = await buildPdf();
-    if (b != null) await deliver(b, 'azmoon.pdf', true);
+    if (b != null) await deliver(b, '${baseName()}.pdf', true);
   }
 
   Future<void> exportDocx() async {
     final b = await buildDocx();
-    if (b != null) await deliver(b, 'azmoon.docx', false);
+    if (b != null) await deliver(b, '${baseName()}.docx', false);
   }
 
   // ---------------- ساخت PDF ----------------
@@ -376,6 +528,9 @@ class _HomeState extends State<Home> {
       msg('ابتدا سؤال اضافه کنید');
       return null;
     }
+    msg('در حال ساخت فایل...');
+    final fxs = await renderAll();
+
     Future<pw.Font> lf(String a) async => pw.Font.ttf(await rootBundle.load(a));
     pw.Font fBase;
     try {
@@ -403,6 +558,18 @@ class _HomeState extends State<Home> {
                 fontSize: size,
                 fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal));
 
+    // خط سؤال: فارسی راست‌چین، انگلیسی چپ‌چین
+    pw.Widget qline(String s, {double size = 13}) {
+      final rtl = isRtl(s);
+      return pw.Align(
+        alignment: rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
+        child: pw.Text(s,
+            textDirection: rtl ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+            textAlign: rtl ? pw.TextAlign.right : pw.TextAlign.left,
+            style: pw.TextStyle(fontSize: size)),
+      );
+    }
+
     // متنی که اگر از سلول بزرگ‌تر شد، خودکار کوچک می‌شود
     pw.Widget fit(String s,
             {double size = 12,
@@ -414,6 +581,12 @@ class _HomeState extends State<Home> {
           alignment: al,
           child: t(s, size: size, a: ta, bold: b),
         );
+
+    // عدد (ردیف و بارم): چپ‌به‌راست و بدون تغییر اندازه
+    pw.Widget numText(String s, {double size = 12}) => pw.Text(s,
+        textDirection: pw.TextDirection.ltr,
+        textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(fontSize: s.length > 4 ? size - 2 : size));
 
     final side = pw.BorderSide(width: 0.8);
 
@@ -490,16 +663,38 @@ class _HomeState extends State<Home> {
     for (var i = 0; i < qs.length; i++) {
       final q = qs[i];
       final content = <pw.Widget>[];
-      if (q.text.isNotEmpty) content.add(t(q.text, size: 13));
-      if (q.image != null && File(q.image!).existsSync()) {
-        content.add(pw.SizedBox(height: 4));
+      final rtlQ = q.text.trim().isEmpty ? true : isRtl(q.text);
+      final lab = rtlQ ? kLabels : kLatin;
+
+      for (final l in q.text.split('\n')) {
+        if (l.trim().isNotEmpty) content.add(qline(l, size: 13));
+      }
+      for (final f in fxs[i]) {
+        content.add(pw.SizedBox(height: 3));
         content.add(pw.Center(
-          child: pw.ConstrainedBox(
-            constraints: const pw.BoxConstraints(maxWidth: 420, maxHeight: 250),
-            child: pw.Image(pw.MemoryImage(File(q.image!).readAsBytesSync()),
-                fit: pw.BoxFit.contain),
-          ),
+          child: pw.Image(pw.MemoryImage(f.bytes),
+              width: f.w * kFxScale, height: f.h * kFxScale, fit: pw.BoxFit.fill),
         ));
+      }
+      var hasImg = false;
+      if (q.image != null && File(q.image!).existsSync()) {
+        final sz = await imgSize(q.image!);
+        if (sz != null) {
+          hasImg = true;
+          final bw = q.imgW * kCm;
+          final bh = q.imgH * kCm;
+          final s = math.min(bw / sz.width, bh / sz.height);
+          content.add(pw.SizedBox(height: 4));
+          content.add(pw.Align(
+            alignment: q.imgAlign == 'l'
+                ? pw.Alignment.centerLeft
+                : (q.imgAlign == 'r'
+                    ? pw.Alignment.centerRight
+                    : pw.Alignment.center),
+            child: pw.Image(pw.MemoryImage(File(q.image!).readAsBytesSync()),
+                width: sz.width * s, height: sz.height * s, fit: pw.BoxFit.fill),
+          ));
+        }
       }
       if (q.type == 'mc' && q.options.any((o) => o.isNotEmpty)) {
         content.add(pw.SizedBox(height: 4));
@@ -507,40 +702,42 @@ class _HomeState extends State<Home> {
         if (short) {
           content.add(pw.Row(children: [
             for (var k = 3; k >= 0; k--)
-              pw.Expanded(child: t('${kLabels[k]}) ${q.options[k]}', size: 12)),
+              pw.Expanded(child: qline('${lab[k]}) ${q.options[k]}', size: 12)),
           ]));
         } else {
           for (var k = 0; k < 4; k++) {
-            content.add(t('${kLabels[k]}) ${q.options[k]}', size: 12));
+            content.add(qline('${lab[k]}) ${q.options[k]}', size: 12));
           }
         }
       } else if (q.type == 'tf') {
         content.add(pw.SizedBox(height: 4));
-        content.add(t('(    ) صحیح          (    ) غلط', size: 12));
-      } else if (q.type == 'desc' && q.image == null) {
+        content.add(qline(
+            rtlQ
+                ? '(    ) صحیح          (    ) غلط'
+                : '(    ) True          (    ) False',
+            size: 12));
+      } else if (q.type == 'desc' && !hasImg && fxs[i].isEmpty) {
         content.add(pw.SizedBox(height: 45));
       }
+
       rows.add(pw.TableRow(children: [
         pw.Container(
           alignment: pw.Alignment.topCenter,
           padding: const pw.EdgeInsets.all(3),
-          child: fit(num2(q.points),
-              size: 12, al: pw.Alignment.center, ta: pw.TextAlign.center),
+          child: numText(num2(q.points)),
         ),
-        pw.Container(
-          alignment: pw.Alignment.topRight,
+        pw.Padding(
           padding: const pw.EdgeInsets.all(8),
           child: pw.Column(
             mainAxisSize: pw.MainAxisSize.min,
-            crossAxisAlignment: pw.CrossAxisAlignment.end,
-            children: content,
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: content.isEmpty ? [pw.SizedBox(height: 10)] : content,
           ),
         ),
         pw.Container(
           alignment: pw.Alignment.center,
           padding: const pw.EdgeInsets.all(2),
-          child: fit(fa('${i + 1}'),
-              size: 12, al: pw.Alignment.center, ta: pw.TextAlign.center),
+          child: numText(fa('${i + 1}')),
         ),
       ]));
     }
@@ -571,25 +768,21 @@ class _HomeState extends State<Home> {
       msg('ابتدا سؤال اضافه کنید');
       return null;
     }
+    msg('در حال ساخت فایل...');
+    final fxs = await renderAll();
     final media = <String, List<int>>{};
     final rels = StringBuffer();
     var imgId = 0;
 
-    Future<String> drawing(String path) async {
-      final bytes = File(path).readAsBytesSync();
-      final im = await decodeImageFromList(Uint8List.fromList(bytes));
+    // پاراگراف تصویر (بدون bidi تا چپ/راست دقیقاً همان چیزی باشد که کاربر خواسته)
+    String addPic(List<int> bytes, int cx, int cy, String jc) {
       imgId++;
       final ext = (bytes.length > 1 && bytes[0] == 0x89) ? 'png' : 'jpeg';
       final name = 'image$imgId.$ext';
       media[name] = bytes;
       rels.write(
           '<Relationship Id="rIdImg$imgId" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/$name"/>');
-      const maxW = 5040000.0; // 14cm
-      const maxH = 2700000.0; // 7.5cm
-      final s = math.min(maxW / im.width, maxH / im.height);
-      final cx = (im.width * s).round();
-      final cy = (im.height * s).round();
-      return '<w:p><w:pPr><w:bidi/><w:spacing w:before="60" w:after="60"/><w:jc w:val="center"/></w:pPr>'
+      return '<w:p><w:pPr><w:spacing w:before="60" w:after="60"/><w:jc w:val="$jc"/></w:pPr>'
           '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
           '<wp:extent cx="$cx" cy="$cy"/><wp:docPr id="$imgId" name="Picture $imgId"/>'
           '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
@@ -643,26 +836,58 @@ class _HomeState extends State<Home> {
     for (var i = 0; i < qs.length; i++) {
       final q = qs[i];
       final c = StringBuffer();
-      if (q.text.isNotEmpty) {
-        for (final l in q.text.split('\n')) {
-          c.write(pp(rp(l, sz: 24)));
+      final rtlQ = q.text.trim().isEmpty ? true : isRtl(q.text);
+      final lab = rtlQ ? kLabels : kLatin;
+
+      for (final l in q.text.split('\n')) {
+        if (l.trim().isEmpty) continue;
+        final r = isRtl(l);
+        c.write(pp(rp(l, sz: 24, rtl: r), rtl: r));
+      }
+      for (final f in fxs[i]) {
+        c.write(addPic(f.bytes, (f.w * kFxScale * 12700).round(),
+            (f.h * kFxScale * 12700).round(), 'center'));
+      }
+      var hasImg = false;
+      if (q.image != null && File(q.image!).existsSync()) {
+        final sz = await imgSize(q.image!);
+        if (sz != null) {
+          hasImg = true;
+          final bw = q.imgW * 360000;
+          final bh = q.imgH * 360000;
+          final s = math.min(bw / sz.width, bh / sz.height);
+          c.write(addPic(
+              File(q.image!).readAsBytesSync(),
+              (sz.width * s).round(),
+              (sz.height * s).round(),
+              q.imgAlign == 'l' ? 'left' : (q.imgAlign == 'r' ? 'right' : 'center')));
         }
       }
-      final hasImg = q.image != null && File(q.image!).existsSync();
-      if (hasImg) c.write(await drawing(q.image!));
       if (q.type == 'mc' && q.options.any((o) => o.isNotEmpty)) {
         for (var k = 0; k < 4; k++) {
-          c.write(pp(rp('${kLabels[k]}) ${q.options[k]}', sz: 22)));
+          final line = '${lab[k]}) ${q.options[k]}';
+          final r = isRtl(line);
+          c.write(pp(rp(line, sz: 22, rtl: r), rtl: r));
         }
       } else if (q.type == 'tf') {
-        c.write(pp(rp('(     ) صحیح          (     ) غلط', sz: 22)));
+        c.write(pp(
+            rp(
+                rtlQ
+                    ? '(     ) صحیح          (     ) غلط'
+                    : '(     ) True          (     ) False',
+                sz: 22,
+                rtl: rtlQ),
+            rtl: rtlQ));
       }
       if (c.isEmpty) c.write('<w:p/>');
       body.write(trX(
-        tcX(pp(rp(fa('${i + 1}'), sz: 22), center: true), 560, va: 'center') +
+        tcX(pp(rp(fa('${i + 1}'), sz: 22, rtl: false), center: true, rtl: false),
+                560,
+                va: 'center') +
             tcX(c.toString(), 9440) +
-            tcX(pp(rp(num2(q.points), sz: 22), center: true), 700),
-        h: (q.type == 'desc' && !hasImg) ? 1400 : 600,
+            tcX(pp(rp(num2(q.points), sz: 22, rtl: false), center: true, rtl: false),
+                700),
+        h: (q.type == 'desc' && !hasImg && fxs[i].isEmpty) ? 1400 : 600,
       ));
     }
     body.write('</w:tbl><w:p/>');
@@ -757,10 +982,14 @@ class _HomeState extends State<Home> {
                             backgroundColor: kBlue,
                             foregroundColor: Colors.white,
                             child: Text(fa('${i + 1}'))),
-                        title: Text(q.text.isEmpty ? 'سؤال تصویری' : q.text,
-                            maxLines: 2, overflow: TextOverflow.ellipsis),
+                        title: Text(
+                            q.text.isEmpty
+                                ? (q.formula.isNotEmpty ? 'سؤال فرمولی' : 'سؤال تصویری')
+                                : q.text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis),
                         subtitle: Text(
-                            '${typeName(q.type)} - ${num2(q.points)} نمره${q.image != null ? ' - دارای تصویر' : ''}'),
+                            '${typeName(q.type)} - ${num2(q.points)} نمره${q.image != null ? ' - دارای تصویر' : ''}${q.formula.isNotEmpty ? ' - دارای فرمول' : ''}'),
                         onTap: () => edit(i),
                         trailing: IconButton(
                           icon: const Icon(Icons.delete, color: Colors.redAccent),
@@ -828,9 +1057,35 @@ class Editor extends StatefulWidget {
 class _EditorState extends State<Editor> {
   String type = 'mc';
   String? image;
+  double imgW = 10, imgH = 6;
+  String imgAlign = 'c';
   final text = TextEditingController();
+  final formula = TextEditingController();
   final pts = TextEditingController(text: '1');
   final opts = List.generate(4, (_) => TextEditingController());
+
+  static const syms = <(String, String, int)>[
+    ('a/b', r'\frac{}{}', 3),
+    ('xⁿ', r'^{}', 1),
+    ('xₙ', r'_{}', 1),
+    ('√', r'\sqrt{}', 1),
+    ('π', r'\pi ', 0),
+    ('≤', r'\leq ', 0),
+    ('≥', r'\geq ', 0),
+    ('≠', r'\neq ', 0),
+    ('×', r'\times ', 0),
+    ('÷', r'\div ', 0),
+    ('±', r'\pm ', 0),
+    ('∞', r'\infty ', 0),
+    ('Σ', r'\sum ', 0),
+    ('∫', r'\int ', 0),
+    ('°', r'^\circ ', 0),
+    ('→', r'\rightarrow ', 0),
+    ('Δ', r'\Delta ', 0),
+    ('α', r'\alpha ', 0),
+    ('β', r'\beta ', 0),
+    ('θ', r'\theta ', 0),
+  ];
 
   @override
   void initState() {
@@ -839,16 +1094,55 @@ class _EditorState extends State<Editor> {
     if (q != null) {
       type = q.type;
       text.text = q.text;
+      formula.text = q.formula;
       pts.text = q.points.toString();
       image = q.image;
+      imgW = q.imgW.clamp(1.0, 16.0).toDouble();
+      imgH = q.imgH.clamp(1.0, 15.0).toDouble();
+      imgAlign = q.imgAlign;
       for (var i = 0; i < 4; i++) {
         opts[i].text = q.options[i];
       }
     }
   }
 
+  void ins(String s, int back) {
+    final v = formula.value;
+    final sel = v.selection;
+    final st = sel.isValid ? sel.start : v.text.length;
+    final en = sel.isValid ? sel.end : v.text.length;
+    final t = v.text.replaceRange(st, en, s);
+    formula.value = TextEditingValue(
+      text: t,
+      selection: TextSelection.collapsed(offset: st + s.length - back),
+    );
+    setState(() {});
+  }
+
+  Future<void> choose() async {
+    final p = await pickImage();
+    if (p == null) return;
+    var w = 10.0;
+    var h = 6.0;
+    final sz = await imgSize(p);
+    if (sz != null) {
+      h = w * sz.height / sz.width;
+      if (h > 12) {
+        h = 12;
+        w = h * sz.width / sz.height;
+      }
+    }
+    setState(() {
+      image = p;
+      imgW = double.parse(w.clamp(1.0, 16.0).toStringAsFixed(1));
+      imgH = double.parse(h.clamp(1.0, 15.0).toStringAsFixed(1));
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final lines =
+        formula.text.split('\n').where((e) => e.trim().isNotEmpty).toList();
     return Scaffold(
       appBar: bar('سؤال'),
       body: ListView(padding: const EdgeInsets.all(16), children: [
@@ -864,17 +1158,96 @@ class _EditorState extends State<Editor> {
         const SizedBox(height: 16),
         field(text, 'متن سؤال (اگر صورت سؤال در تصویر است، خالی بگذارید)',
             lines: 2),
+
+        // ---- باکس فرمول ----
+        const Text('باکس فرمول و عبارت ریاضی (اختیاری)',
+            style: TextStyle(fontWeight: FontWeight.bold, color: kBlue)),
+        const SizedBox(height: 6),
+        Wrap(spacing: 6, runSpacing: 0, children: [
+          for (final s in syms)
+            ActionChip(
+              label: Text(s.$1, style: const TextStyle(fontSize: 16)),
+              onPressed: () => ins(s.$2, s.$3),
+            ),
+        ]),
+        const SizedBox(height: 6),
+        TextField(
+          controller: formula,
+          textDirection: TextDirection.ltr,
+          minLines: 2,
+          maxLines: 5,
+          onChanged: (_) => setState(() {}),
+          style: const TextStyle(fontFamily: 'monospace'),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: Colors.white,
+            labelText: 'هر خط یک فرمول، مثال: x^{2}+\\frac{1}{2}',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+        for (final l in lines)
+          Container(
+            margin: const EdgeInsets.only(top: 6),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(12)),
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Math.tex(l.trim(), textStyle: const TextStyle(fontSize: 22)),
+              ),
+            ),
+          ),
+        const SizedBox(height: 16),
+
+        // ---- تصویر ----
         OutlinedButton.icon(
-          onPressed: () async {
-            final p = await pickImage();
-            if (p != null) setState(() => image = p);
-          },
+          onPressed: choose,
           icon: const Icon(Icons.image),
           label: Text(image == null ? 'درج تصویر' : 'تغییر تصویر'),
         ),
         if (image != null) ...[
           const SizedBox(height: 8),
-          Image.file(File(image!), height: 160, fit: BoxFit.contain),
+          Align(
+            alignment: imgAlign == 'l'
+                ? Alignment.centerLeft
+                : (imgAlign == 'r' ? Alignment.centerRight : Alignment.center),
+            child: SizedBox(
+              width: imgW * 20,
+              height: imgH * 20,
+              child: Image.file(File(image!), fit: BoxFit.contain),
+            ),
+          ),
+          Text('عرض: ${num2(imgW)} سانتی‌متر'),
+          Slider(
+            value: imgW,
+            min: 1,
+            max: 16,
+            divisions: 150,
+            onChanged: (v) =>
+                setState(() => imgW = double.parse(v.toStringAsFixed(1))),
+          ),
+          Text('ارتفاع: ${num2(imgH)} سانتی‌متر'),
+          Slider(
+            value: imgH,
+            min: 1,
+            max: 15,
+            divisions: 140,
+            onChanged: (v) =>
+                setState(() => imgH = double.parse(v.toStringAsFixed(1))),
+          ),
+          const Text('جایگاه تصویر'),
+          const SizedBox(height: 4),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'l', label: Text('چپ')),
+              ButtonSegment(value: 'c', label: Text('وسط')),
+              ButtonSegment(value: 'r', label: Text('راست')),
+            ],
+            selected: {imgAlign},
+            onSelectionChanged: (s) => setState(() => imgAlign = s.first),
+          ),
           TextButton.icon(
             onPressed: () => setState(() => image = null),
             icon: const Icon(Icons.delete, color: Colors.redAccent),
@@ -884,15 +1257,17 @@ class _EditorState extends State<Editor> {
         const SizedBox(height: 12),
         if (type == 'mc')
           for (var i = 0; i < 4; i++) field(opts[i], 'گزینه ${kLabels[i]}'),
-        field(pts, 'بارم (نمره)',
+        field(pts, 'بارم (نمره) - مثال: ۲/۵',
             kb: const TextInputType.numberWithOptions(decimal: true)),
         FilledButton(
           style: FilledButton.styleFrom(
               backgroundColor: kBlue, padding: const EdgeInsets.all(16)),
           onPressed: () {
-            if (text.text.trim().isEmpty && image == null) {
+            if (text.text.trim().isEmpty &&
+                image == null &&
+                formula.text.trim().isEmpty) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('متن سؤال یا تصویر سؤال را وارد کنید')));
+                  content: Text('متن، تصویر یا فرمول سؤال را وارد کنید')));
               return;
             }
             Navigator.pop(
@@ -900,9 +1275,13 @@ class _EditorState extends State<Editor> {
                 Q(
                   type: type,
                   text: text.text.trim(),
+                  formula: formula.text.trim(),
                   options: opts.map((e) => e.text.trim()).toList(),
-                  points: double.tryParse(pts.text.replaceAll('٫', '.')) ?? 1,
+                  points: double.tryParse(toEn(pts.text.trim())) ?? 1,
                   image: image,
+                  imgW: imgW,
+                  imgH: imgH,
+                  imgAlign: imgAlign,
                 ));
           },
           child: const Text('ثبت سؤال', style: TextStyle(fontSize: 16)),
