@@ -173,10 +173,127 @@ Future<Size?> imgSize(String path) async {
 class Fx {
   final Uint8List bytes;
   final double w, h;
-  Fx(this.bytes, this.w, this.h);
+  final bool rtl; // خط حاوی فارسی است → راست‌چین
+  Fx(this.bytes, this.w, this.h, {this.rtl = false});
+}
+
+class QFx {
+  final List<Fx> formulas; // فرمول‌های جداگانه‌ی قدیمی
+  final Map<int, Fx> lines; // خطوط متن سؤال که فرمول درون‌خطی دارند
+  QFx(this.formulas, this.lines);
 }
 
 const kFxScale = 13 / 30;
+
+// ---------------- فرمول درون‌خطی و متن فارسی ----------------
+const kFxFont = 'FxFont';
+Future<void>? _fxFontFuture;
+Future<void> ensureFxFont() => _fxFontFuture ??= _loadFxFont();
+
+Future<void> _loadFxFont() async {
+  final loader = FontLoader(kFxFont);
+  var ok = false;
+  for (final a in ['assets/fonts/BNazanin.ttf', 'assets/fonts/Vazir.ttf']) {
+    try {
+      final d = await rootBundle.load(a);
+      loader.addFont(Future.value(d));
+      ok = true;
+      break;
+    } catch (_) {}
+  }
+  if (ok) {
+    try {
+      await loader.load();
+    } catch (_) {}
+  }
+}
+
+final _faRun = RegExp(
+    r'[\u0600-\u06FF\u200c\u200f]+(?:[ \u00a0]+[\u0600-\u06FF\u200c\u200f]+)*');
+
+bool hasPersian(String s) => RegExp(r'[\u0600-\u06FF]').hasMatch(s);
+
+// جداسازی متن سؤال به بخش‌های عادی و فرمول ($...$)
+List<(bool, String)> splitDollar(String s) {
+  final out = <(bool, String)>[];
+  var i = 0;
+  while (i < s.length) {
+    final a = s.indexOf(r'$', i);
+    if (a < 0) break;
+    final b = s.indexOf(r'$', a + 1);
+    if (b < 0) break;
+    out.add((false, s.substring(i, a)));
+    out.add((true, s.substring(a + 1, b)));
+    i = b + 1;
+  }
+  out.add((false, s.substring(i)));
+  return out.where((e) => e.$2.trim().isNotEmpty).toList();
+}
+
+bool hasMathMark(String line) => splitDollar(line).any((e) => e.$1);
+
+bool lineRtl(String line) =>
+    isRtl(splitDollar(line).where((e) => !e.$1).map((e) => e.$2).join(' '));
+
+// ساخت ویجت یک خط: کلمات فارسی با متن عادی (راست‌چین و متصل)، فرمول‌ها با Math
+Widget fxLineWidget(String src,
+    {required bool textMode, double fs = 30, double? maxW}) {
+  final parts = textMode ? splitDollar(src) : <(bool, String)>[(true, src)];
+  final rtl = textMode ? lineRtl(src) : hasPersian(src);
+  final kids = <Widget>[];
+
+  Widget mathW(String t) => Directionality(
+        textDirection: TextDirection.ltr,
+        child: Math.tex(t, textStyle: TextStyle(fontSize: fs, color: Colors.black)),
+      );
+
+  void word(String w) => kids.add(Text(w,
+      textDirection: isRtl(w) ? TextDirection.rtl : TextDirection.ltr,
+      style: TextStyle(
+          fontSize: fs, color: Colors.black, fontFamily: kFxFont, height: 1.2)));
+
+  void words(String t) {
+    for (final w in t.split(RegExp(r'[ \u00a0\t]+'))) {
+      if (w.isNotEmpty) word(w);
+    }
+  }
+
+  void mathSeg(String m) {
+    var last = 0;
+    for (final mt in _faRun.allMatches(m)) {
+      final pre = m.substring(last, mt.start).trim();
+      if (pre.isNotEmpty) kids.add(mathW(pre));
+      words(mt.group(0)!);
+      last = mt.end;
+    }
+    final tail = m.substring(last).trim();
+    if (tail.isNotEmpty) kids.add(mathW(tail));
+  }
+
+  for (final p in parts) {
+    if (p.$1) {
+      mathSeg(p.$2);
+    } else {
+      words(p.$2);
+    }
+  }
+
+  if (kids.isEmpty) return const SizedBox.shrink();
+  Widget child;
+  if (kids.length == 1) {
+    child = kids.first;
+  } else {
+    child = Wrap(
+      spacing: fs * 0.3,
+      runSpacing: fs * 0.2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: kids,
+    );
+    if (maxW != null) child = ConstrainedBox(constraints: BoxConstraints(maxWidth: maxW), child: child);
+  }
+  return Directionality(
+      textDirection: rtl ? TextDirection.rtl : TextDirection.ltr, child: child);
+}
 
 // ---------------- مدل سؤال ----------------
 class Q {
@@ -328,6 +445,7 @@ String tcX(String inner, int w,
 
 String trX(String cells, {int h = 0}) =>
     '<w:tr>${h > 0 ? '<w:trPr><w:cantSplit/><w:trHeight w:val="$h" w:hRule="atLeast"/></w:trPr>' : ''}$cells</w:tr>';
+
 String tblPr(int inner) =>
     '<w:tblPr><w:bidiVisual/><w:tblW w:w="10700" w:type="dxa"/><w:tblBorders>'
     '<w:top w:val="single" w:sz="18" w:space="0" w:color="000000"/>'
@@ -696,7 +814,8 @@ class ProfilePage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Center(child: Text(name,
+        Center(
+            child: Text(name,
                 style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
         const SizedBox(height: 16),
         if (!admin && u != null) ...[
@@ -923,7 +1042,9 @@ class _HomeState extends State<Home> {
   }
 
   // ---------------- تبدیل فرمول به تصویر ----------------
-  Future<Fx?> renderTex(String tex) async {
+  Future<Fx?> renderFx(String tex, {required bool textMode}) async {
+    await ensureFxFont();
+    final rtl = textMode ? lineRtl(tex) : hasPersian(tex);
     final key = GlobalKey();
     final entry = OverlayEntry(
       builder: (_) => Positioned(
@@ -937,9 +1058,7 @@ class _HomeState extends State<Home> {
               child: Container(
                 color: Colors.white,
                 padding: const EdgeInsets.all(4),
-                child: Math.tex(tex,
-                    textStyle:
-                        const TextStyle(fontSize: 30, color: Colors.black)),
+                child: fxLineWidget(tex, textMode: textMode, maxW: 1040),
               ),
             ),
           ),
@@ -956,7 +1075,7 @@ class _HomeState extends State<Home> {
       final im = await ro.toImage(pixelRatio: 3);
       final bd = await im.toByteData(format: ui.ImageByteFormat.png);
       if (bd == null) return null;
-      return Fx(bd.buffer.asUint8List(), im.width / 3, im.height / 3);
+      return Fx(bd.buffer.asUint8List(), im.width / 3, im.height / 3, rtl: rtl);
     } catch (_) {
       return null;
     } finally {
@@ -964,17 +1083,24 @@ class _HomeState extends State<Home> {
     }
   }
 
-  Future<List<List<Fx>>> renderAll() async {
-    final out = <List<Fx>>[];
+  Future<List<QFx>> renderAll() async {
+    final out = <QFx>[];
     for (final q in qs) {
-      final l = <Fx>[];
+      final fl = <Fx>[];
       for (final line in q.formula.split('\n')) {
         final s = line.trim();
         if (s.isEmpty) continue;
-        final f = await renderTex(s);
-        if (f != null) l.add(f);
+        final f = await renderFx(s, textMode: false);
+        if (f != null) fl.add(f);
       }
-      out.add(l);
+      final ls = <int, Fx>{};
+      final tl = q.text.split('\n');
+      for (var k = 0; k < tl.length; k++) {
+        if (!hasMathMark(tl[k])) continue;
+        final f = await renderFx(tl[k].trim(), textMode: true);
+        if (f != null) ls[k] = f;
+      }
+      out.add(QFx(fl, ls));
     }
     return out;
   }
@@ -1055,7 +1181,8 @@ class _HomeState extends State<Home> {
     pw.Font fBold;
     try {
       fBold = await lf('assets/fonts/BNazaninBold.ttf');
-    } catch (_) {fBold = fBase;
+    } catch (_) {
+      fBold = fBase;
     }
     final doc =
         pw.Document(theme: pw.ThemeData.withFont(base: fBase, bold: fBold));
@@ -1178,15 +1305,32 @@ class _HomeState extends State<Home> {
       final rtlQ = q.text.trim().isEmpty ? true : isRtl(q.text);
       final lab = rtlQ ? kLabels : kLatin;
 
-      for (final l in q.text.split('\n')) {
-        if (l.trim().isNotEmpty) content.add(qline(l, size: 13));
+      final qLines = q.text.split('\n');
+      for (var li = 0; li < qLines.length; li++) {
+        final l = qLines[li];
+        if (l.trim().isEmpty) continue;
+        final fx = fxs[i].lines[li];
+        if (fx != null) {
+          content.add(pw.SizedBox(height: 2));
+          content.add(pw.Align(
+            alignment:
+                fx.rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
+            child: pw.Image(pw.MemoryImage(fx.bytes),
+                width: fx.w * kFxScale,
+                height: fx.h * kFxScale,
+                fit: pw.BoxFit.fill),
+          ));
+          content.add(pw.SizedBox(height: 2));
+        } else {
+          content.add(qline(l, size: 13));
+        }
       }
-      for (final f in fxs[i]) {
+      for (final f in fxs[i].formulas) {
         content.add(pw.SizedBox(height: 3));
         content.add(pw.Align(
-          alignment: pw.Alignment.centerLeft,
+          alignment: f.rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
           child: pw.Padding(
-            padding: const pw.EdgeInsets.only(left: 8),
+            padding: pw.EdgeInsets.only(left: f.rtl ? 0 : 8),
             child: pw.Image(pw.MemoryImage(f.bytes),
                 width: f.w * kFxScale,
                 height: f.h * kFxScale,
@@ -1382,15 +1526,23 @@ class _HomeState extends State<Home> {
       final rtlQ = q.text.trim().isEmpty ? true : isRtl(q.text);
       final lab = rtlQ ? kLabels : kLatin;
 
-      for (final l in q.text.split('\n')) {
+      final qLines = q.text.split('\n');
+      for (var li = 0; li < qLines.length; li++) {
+        final l = qLines[li];
         if (l.trim().isEmpty) continue;
-        final r = isRtl(l);
-        c.write(pp(rp(l, sz: 24, rtl: r), rtl: r));
+        final fx = fxs[i].lines[li];
+        if (fx != null) {
+          c.write(addPic(fx.bytes, (fx.w * kFxScale * 12700).round(),
+              (fx.h * kFxScale * 12700).round(), fx.rtl ? 'right' : 'left'));
+        } else {
+          final r = isRtl(l);
+          c.write(pp(rp(l, sz: 24, rtl: r), rtl: r));
+        }
       }
-      for (final f in fxs[i]) {
+      for (final f in fxs[i].formulas) {
         c.write(addPic(f.bytes, (f.w * kFxScale * 12700).round(),
-            (f.h * kFxScale * 12700).round(), 'left',
-            ind: 160));
+            (f.h * kFxScale * 12700).round(), f.rtl ? 'right' : 'left',
+            ind: f.rtl ? 0 : 160));
       }
       if (q.image != null && File(q.image!).existsSync()) {
         final sz = await imgSize(q.image!);
@@ -1502,7 +1654,8 @@ class _HomeState extends State<Home> {
     return Scaffold(
       appBar: bar('آزمون بساز', actions: [
         actBtn(Icons.description, 'ورد', exportDocx),
-        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),const SizedBox(width: 8),
+        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),
+        const SizedBox(width: 8),
       ]),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: kBlue,
@@ -1694,11 +1847,25 @@ class _EditorState extends State<Editor> {
     ('α', r'\alpha ', 0),
     ('β', r'\beta ', 0),
     ('θ', r'\theta ', 0),
+    ('حد  lim', r'\lim_{x \to }', 1),
+    ('log', r'\log_{}', 1),
+    ('sin', r'\sin ', 0),
+    ('cos', r'\cos ', 0),
+    ('tan', r'\tan ', 0),
+    ('∈', r'\in ', 0),
+    ('∪', r'\cup ', 0),
+    ('∩', r'\cap ', 0),
+    ('⊂', r'\subset ', 0),
+    ('⇒', r'\Rightarrow ', 0),
+    ('⇔', r'\Leftrightarrow ', 0),
   ];
 
   @override
   void initState() {
     super.initState();
+    ensureFxFont().then((_) {
+      if (mounted) setState(() {});
+    });
     final q = widget.q;
     if (q != null) {
       type = q.type;
@@ -1728,6 +1895,43 @@ class _EditorState extends State<Editor> {
       selection: TextSelection.collapsed(offset: st + s.length - back),
     );
     setState(() {});
+  }
+
+  // درج فرمول در متن سؤال (محل مکان‌نما) و خالی کردن کادر فرمول
+  void insertFormula() {
+    final f = formula.text
+        .split('\n')
+        .map((e) => e.replaceAll(r'$', '').trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (f.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('ابتدا فرمول را بنویسید')));
+      return;
+    }
+    final ins = f.map((e) => '\$$e\$').join(' ');
+    final v = text.value;
+    final sel = v.selection;
+    final st = sel.isValid ? sel.start : v.text.length;
+    final en = sel.isValid ? sel.end : v.text.length;
+    final before = v.text.substring(0, st);
+    final after = v.text.substring(en);
+    final pre = (before.isEmpty || before.endsWith(' ') || before.endsWith('\n'))
+        ? ''
+        : ' ';
+    final post =
+        (after.isEmpty || after.startsWith(' ') || after.startsWith('\n'))
+            ? ''
+            : ' ';
+    final mid = '$pre$ins$post';
+    text.value = TextEditingValue(
+      text: '$before$mid$after',
+      selection: TextSelection.collapsed(offset: before.length + mid.length),
+    );
+    formula.clear();
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('فرمول در متن سؤال درج شد. فرمول بعدی را بنویسید.')));
   }
 
   Future<void> choose() async {
@@ -1770,6 +1974,35 @@ class _EditorState extends State<Editor> {
         const SizedBox(height: 16),
         field(text, 'متن سؤال (اگر صورت سؤال در تصویر است، خالی بگذارید)',
             lines: 2, onChanged: (_) => setState(() {})),
+        if (hasMathMark(text.text))
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kBlue.withOpacity(0.3))),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('پیش‌نمایش سؤال با فرمول‌ها',
+                    style: TextStyle(fontSize: 11, color: Colors.black54)),
+                const SizedBox(height: 6),
+                for (final l in text.text.split('\n'))
+                  if (l.trim().isNotEmpty)
+                    Align(
+                      alignment: lineRtl(l)
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: fxLineWidget(l.trim(),
+                          textMode: true,
+                          fs: 18,
+                          maxW: MediaQuery.of(context).size.width - 70),
+                    ),
+              ],
+            ),
+          ),
 
         // ---- دکمه فرمول ریاضی ----
         OutlinedButton.icon(
@@ -1789,15 +2022,22 @@ class _EditorState extends State<Editor> {
           const SizedBox(height: 6),
           TextField(
             controller: formula,
-            textDirection: TextDirection.ltr,
+            textDirection: hasPersian(formula.text)
+                ? TextDirection.rtl
+                : TextDirection.ltr,
+            textAlign:
+                hasPersian(formula.text) ? TextAlign.right : TextAlign.left,
             minLines: 2,
             maxLines: 5,
             onChanged: (_) => setState(() {}),
-            style: const TextStyle(fontFamily: 'monospace'),
+            style: hasPersian(formula.text)
+                ? null
+                : const TextStyle(fontFamily: 'monospace'),
             decoration: InputDecoration(
               filled: true,
               fillColor: Colors.white,
-              labelText: 'هر خط یک فرمول (با دکمه‌های بالا بنویسید)',
+              labelText:
+                  'فرمول (کلمات فارسی را بیرون از { } بنویسید؛ هر خط یک فرمول)',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
             ),
           ),
@@ -1805,17 +2045,31 @@ class _EditorState extends State<Editor> {
             Container(
               margin: const EdgeInsets.only(top: 6),
               padding: const EdgeInsets.all(8),
+              width: double.infinity,
               decoration: BoxDecoration(
                   color: Colors.white, borderRadius: BorderRadius.circular(12)),
-              child: Directionality(
-                textDirection: TextDirection.ltr,
+              child: Align(
+                alignment: hasPersian(l)
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child:
-                      Math.tex(l.trim(), textStyle: const TextStyle(fontSize: 22)),
+                  child: fxLineWidget(l.trim(),
+                      textMode: false,
+                      fs: 22,
+                      maxW: MediaQuery.of(context).size.width - 70),
                 ),
               ),
             ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF2E7D32),
+                padding: const EdgeInsets.all(12)),
+            onPressed: insertFormula,
+            icon: const Icon(Icons.add_circle),
+            label: const Text('درج فرمول در متن سؤال'),
+          ),
         ],
         const SizedBox(height: 16),
 
