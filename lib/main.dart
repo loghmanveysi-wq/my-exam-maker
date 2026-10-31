@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -16,8 +17,15 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-void main() => runApp(const App());
+late SharedPreferences prefs;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  prefs = await SharedPreferences.getInstance();
+  runApp(const App());
+}
 
 const kBlue = Color(0xFF1565C0);
 const kLabels = ['الف', 'ب', 'ج', 'د'];
@@ -51,7 +59,7 @@ String toEn(String s) {
       .replaceAll('،', '.');
 }
 
-// جهت متن: اگر اولین حرف مهم فارسی/عربی بود راست‌به‌چپ، اگر انگلیسی بود چپ‌به‌راست
+// جهت متن: فارسی/عربی راست‌به‌چپ، انگلیسی چپ‌به‌راست
 bool isRtl(String s) {
   for (final r in s.runes) {
     if ((r >= 0x0600 && r <= 0x06FF) ||
@@ -63,6 +71,71 @@ bool isRtl(String s) {
     if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) return false;
   }
   return true;
+}
+
+// ---------------- حساب کاربری ----------------
+const kSalt = 'azmoon-besaz|';
+const kAdminEmailHash =
+    '7d1d80643d8c7ef1e91ea9240b7ac321524c1231e357c08ef04d5108c13aff18';
+const kAdminPassHash =
+    '8c55c67afba77902ef01876e781c027ba8559f5ad0185346a7efd321f8c72341';
+
+String sha(String s) => sha256.convert(utf8.encode('$kSalt$s')).toString();
+
+class AppUser {
+  String first, last, username, mobile, email, salt, hash, created;
+  AppUser({
+    required this.first,
+    required this.last,
+    required this.username,
+    required this.mobile,
+    required this.email,
+    required this.salt,
+    required this.hash,
+    required this.created,
+  });
+  String get full => '$first $last';
+  Map<String, dynamic> toJson() => {
+        'first': first,
+        'last': last,
+        'username': username,
+        'mobile': mobile,
+        'email': email,
+        'salt': salt,
+        'hash': hash,
+        'created': created,
+      };
+  factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
+        first: j['first'] ?? '',
+        last: j['last'] ?? '',
+        username: j['username'] ?? '',
+        mobile: j['mobile'] ?? '',
+        email: j['email'] ?? '',
+        salt: j['salt'] ?? '',
+        hash: j['hash'] ?? '',
+        created: j['created'] ?? '',
+      );
+}
+
+List<AppUser> loadUsers() {
+  final raw = prefs.getString('users');
+  if (raw == null) return [];
+  return (jsonDecode(raw) as List).map((e) => AppUser.fromJson(e)).toList();
+}
+
+void saveUsers(List<AppUser> l) =>
+    prefs.setString('users', jsonEncode(l.map((e) => e.toJson()).toList()));
+
+Future<void> openUrl(BuildContext c, String url) async {
+  try {
+    final ok = await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    if (!ok) throw Exception('x');
+  } catch (_) {
+    if (c.mounted) {
+      ScaffoldMessenger.of(c)
+          .showSnackBar(const SnackBar(content: Text('باز کردن لینک ممکن نشد')));
+    }
+  }
 }
 
 // ---------------- انتخاب تصویر (هر فرمتی) ----------------
@@ -77,7 +150,6 @@ Future<String?> pickImage() async {
   if (isJpg) {
     ext = 'jpg';
   } else if (!isPng) {
-    // webp, gif, bmp, ... را به PNG تبدیل می‌کنیم
     final im = await decodeImageFromList(bytes);
     final bd = await im.toByteData(format: ui.ImageByteFormat.png);
     if (bd == null) return null;
@@ -98,14 +170,13 @@ Future<Size?> imgSize(String path) async {
   }
 }
 
-// تصویر فرمول
 class Fx {
   final Uint8List bytes;
-  final double w, h; // اندازه منطقی (فونت ۳۰)
+  final double w, h;
   Fx(this.bytes, this.w, this.h);
 }
 
-const kFxScale = 13 / 30; // فرمول با فونت حدود ۱۳ پوینت چاپ می‌شود
+const kFxScale = 13 / 30;
 
 // ---------------- مدل سؤال ----------------
 class Q {
@@ -115,9 +186,10 @@ class Q {
   List<String> options;
   double points;
   String? image;
-  double imgW; // سانتی‌متر
-  double imgH; // سانتی‌متر
+  double imgW;
+  double imgH;
   String imgAlign; // l, c, r
+  int lines; // تعداد خط پاسخ (تشریحی)
   Q({
     required this.type,
     required this.text,
@@ -128,6 +200,7 @@ class Q {
     this.imgW = 10,
     this.imgH = 6,
     this.imgAlign = 'c',
+    this.lines = 1,
   }) : options = options ?? ['', '', '', ''];
   Map<String, dynamic> toJson() => {
         'type': type,
@@ -139,6 +212,7 @@ class Q {
         'imgW': imgW,
         'imgH': imgH,
         'imgAlign': imgAlign,
+        'lines': lines,
       };
   factory Q.fromJson(Map<String, dynamic> j) => Q(
         type: j['type'],
@@ -150,6 +224,7 @@ class Q {
         imgW: (j['imgW'] as num?)?.toDouble() ?? 10,
         imgH: (j['imgH'] as num?)?.toDouble() ?? 6,
         imgAlign: j['imgAlign'] ?? 'c',
+        lines: (j['lines'] as num?)?.toInt() ?? 1,
       );
 }
 
@@ -208,7 +283,6 @@ class Hdr {
         if (this['subject'].isNotEmpty) 'درس: ${this['subject']}',
       ].where((e) => e.isNotEmpty).toList();
 
-  // ستون راست سربرگ: مشخصات دانش‌آموز
   List<String> get rightRows => [
         'نام و نام خانوادگی: ................',
         'نام پدر: ................',
@@ -217,7 +291,6 @@ class Hdr {
         'پایه: ${this['grade']}      نام دبیر: ${this['teacher']}',
       ];
 
-  // ستون چپ سربرگ: مشخصات امتحان
   List<String> get leftRows => [
         'نوبت امتحان: ${this['round']}',
         'تاریخ امتحان: ${this['date']}',
@@ -243,6 +316,11 @@ String pp(String inner, {bool center = false, bool rtl = true}) =>
     '<w:p><w:pPr>${rtl ? '<w:bidi/>' : ''}<w:spacing w:before="40" w:after="40"/>'
     '${center ? '<w:jc w:val="center"/>' : ''}</w:pPr>$inner</w:p>';
 
+String ruledLine() =>
+    '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="999999"/>'
+    '<w:between w:val="single" w:sz="4" w:space="1" w:color="999999"/></w:pBdr>'
+    '<w:spacing w:before="200" w:after="0"/></w:pPr></w:p>';
+
 String tcX(String inner, int w,
         {String vm = '', bool td = false, String va = 'top'}) =>
     '<w:tc><w:tcPr><w:tcW w:w="$w" w:type="dxa"/>$vm'
@@ -261,7 +339,6 @@ String tblPr(int inner) =>
     '<w:insideV w:val="single" w:sz="$inner" w:space="0" w:color="000000"/>'
     '</w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr>';
 
-// اگر متن طولانی بود، اندازه فونت کم می‌شود
 int fitSz(String s, int sz, int n) =>
     s.length <= n ? sz : math.max(12, (sz * n / s.length).floor());
 
@@ -296,7 +373,7 @@ Widget actBtn(IconData i, String label, VoidCallback f) => InkWell(
     );
 
 Widget field(TextEditingController c, String label,
-        {int lines = 1, TextInputType? kb}) =>
+        {int lines = 1, TextInputType? kb, void Function(String)? onChanged}) =>
     Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: TextField(
@@ -304,6 +381,7 @@ Widget field(TextEditingController c, String label,
         minLines: lines,
         maxLines: lines + 3,
         keyboardType: kb,
+        onChanged: onChanged,
         decoration: InputDecoration(
           filled: true,
           fillColor: Colors.white,
@@ -313,6 +391,7 @@ Widget field(TextEditingController c, String label,
       ),
     );
 
+// ---------------- برنامه ----------------
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -327,13 +406,445 @@ class App extends StatelessWidget {
       ),
       builder: (c, child) =>
           Directionality(textDirection: TextDirection.rtl, child: child!),
-      home: const Home(),
+      home: const Root(),
     );
   }
 }
 
+class Root extends StatefulWidget {
+  const Root({super.key});
+  @override
+  State<Root> createState() => _RootState();
+}
+
+class _RootState extends State<Root> {
+  String? session = prefs.getString('session');
+
+  void login(String s) {
+    prefs.setString('session', s);
+    setState(() => session = s);
+  }
+
+  void logout() {
+    prefs.remove('session');
+    setState(() => session = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (session == null) return AuthScreen(onLogin: login);
+    return Shell(key: ValueKey(session), session: session!, onLogout: logout);
+  }
+}
+
+// ---------------- ثبت‌نام و ورود ----------------
+class AuthScreen extends StatefulWidget {
+  final void Function(String) onLogin;
+  const AuthScreen({super.key, required this.onLogin});
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen> {
+  bool signup = false;
+  bool hide = true;
+  String err = '';
+  final first = TextEditingController();
+  final last = TextEditingController();
+  final user = TextEditingController();
+  final mobile = TextEditingController();
+  final email = TextEditingController();
+  final pass = TextEditingController();
+
+  void doLogin() {
+    final em = email.text.trim().toLowerCase();
+    final pw = pass.text;
+    if (em.isEmpty || pw.isEmpty) {
+      setState(() => err = 'ایمیل و رمز عبور را وارد کنید');
+      return;
+    }
+    if (sha(em) == kAdminEmailHash &&
+        (sha(pw) == kAdminPassHash || sha(toEn(pw)) == kAdminPassHash)) {
+      widget.onLogin('admin');
+      return;
+    }
+    final u = loadUsers().where((x) => x.email == em).toList();
+    if (u.isNotEmpty && sha('${u.first.salt}|$pw') == u.first.hash) {
+      widget.onLogin(em);
+      return;
+    }
+    setState(() => err = 'ایمیل یا رمز عبور اشتباه است');
+  }
+
+  void doSignup() {
+    final f = first.text.trim();
+    final l = last.text.trim();
+    final un = user.text.trim();
+    final mo = toEn(mobile.text.trim()).replaceAll('.', '');
+    final em = email.text.trim().toLowerCase();
+    final pw = pass.text;
+    if (f.isEmpty || l.isEmpty || un.isEmpty || mo.isEmpty || em.isEmpty || pw.isEmpty) {
+      setState(() => err = 'همه‌ی فیلدها را پر کنید');
+      return;
+    }
+    if (un.length < 3 || un.contains(' ')) {
+      setState(() => err = 'نام کاربری حداقل ۳ حرف و بدون فاصله باشد');
+      return;
+    }
+    if (!RegExp(r'^09\d{9}$').hasMatch(mo)) {
+      setState(() => err = 'شماره موبایل باید مثل 09123456789 باشد');
+      return;
+    }
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(em)) {
+      setState(() => err = 'ایمیل معتبر نیست');
+      return;
+    }
+    if (pw.length < 6) {
+      setState(() => err = 'رمز عبور حداقل ۶ کاراکتر باشد');
+      return;
+    }
+    final users = loadUsers();
+    if (sha(em) == kAdminEmailHash ||
+        users.any((x) => x.email == em)) {
+      setState(() => err = 'این ایمیل قبلاً ثبت شده است');
+      return;
+    }
+    if (users.any((x) => x.username.toLowerCase() == un.toLowerCase())) {
+      setState(() => err = 'این نام کاربری قبلاً گرفته شده است');
+      return;
+    }
+    final rnd = math.Random.secure();
+    final salt = base64Url.encode(List<int>.generate(12, (_) => rnd.nextInt(256)));
+    users.add(AppUser(
+      first: f,
+      last: l,
+      username: un,
+      mobile: mo,
+      email: em,
+      salt: salt,
+      hash: sha('$salt|$pw'),
+      created: DateTime.now().toIso8601String(),
+    ));
+    saveUsers(users);
+    widget.onLogin(em);
+  }
+
+  Widget fld(TextEditingController c, String label,
+          {TextInputType? kb, bool pwd = false, bool ltr = false}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: TextField(
+          controller: c,
+          keyboardType: kb,
+          obscureText: pwd && hide,
+          textDirection: ltr ? TextDirection.ltr : null,
+          decoration: InputDecoration(
+            labelText: label,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+            suffixIcon: pwd
+                ? IconButton(
+                    icon: Icon(hide ? Icons.visibility : Icons.visibility_off),
+                    onPressed: () => setState(() => hide = !hide),
+                  )
+                : null,
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF1E88E5), Color(0xFF0D47A1)],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(children: [
+                const Icon(Icons.edit_note, size: 72, color: Colors.white),
+                const Text('آزمون بساز',
+                    style: TextStyle(
+                        color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Card(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(children: [
+                      SegmentedButton<bool>(
+                        segments: const [
+                          ButtonSegment(value: false, label: Text('ورود')),
+                          ButtonSegment(value: true, label: Text('ثبت‌نام')),
+                        ],
+                        selected: {signup},
+                        onSelectionChanged: (s) =>
+                            setState(() {
+                              signup = s.first;
+                              err = '';
+                            }),
+                      ),
+                      const SizedBox(height: 16),
+                      if (signup) ...[
+                        fld(first, 'نام'),
+                        fld(last, 'نام خانوادگی'),
+                        fld(user, 'نام کاربری', ltr: true),
+                        fld(mobile, 'شماره موبایل',
+                            kb: TextInputType.phone, ltr: true),
+                      ],
+                      fld(email, 'ایمیل',
+                          kb: TextInputType.emailAddress, ltr: true),
+                      fld(pass, 'رمز عبور', pwd: true, ltr: true),
+                      if (err.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Text(err,
+                              style: const TextStyle(color: Colors.redAccent)),
+                        ),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                              backgroundColor: kBlue,
+                              padding: const EdgeInsets.all(14)),
+                          onPressed: signup ? doSignup : doLogin,
+                          child: Text(signup ? 'ثبت‌نام' : 'ورود',
+                              style: const TextStyle(fontSize: 16)),
+                        ),
+                      ),
+                    ]),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- قاب اصلی با نوار پایین ----------------
+class Shell extends StatefulWidget {
+  final String session;
+  final VoidCallback onLogout;
+  const Shell({super.key, required this.session, required this.onLogout});
+  @override
+  State<Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<Shell> {
+  int idx = 1;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(index: idx, children: [
+        ProfilePage(session: widget.session, onLogout: widget.onLogout),
+        Home(uid: widget.session),
+        const ContactPage(),
+      ]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: idx,
+        onDestinationSelected: (i) => setState(() => idx = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.person), label: 'پروفایل'),
+          NavigationDestination(icon: Icon(Icons.home), label: 'خانه'),
+          NavigationDestination(
+              icon: Icon(Icons.support_agent), label: 'ارتباط با ما'),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------- پروفایل ----------------
+class ProfilePage extends StatelessWidget {
+  final String session;
+  final VoidCallback onLogout;
+  const ProfilePage({super.key, required this.session, required this.onLogout});
+
+  @override
+  Widget build(BuildContext context) {
+    final admin = session == 'admin';
+    AppUser? u;
+    for (final x in loadUsers()) {
+      if (x.email == session) u = x;
+    }
+    final name = admin ? 'مدیر سیستم' : (u?.full ?? '');
+    Widget row(IconData i, String label, String v) => Card(
+          child: ListTile(
+            leading: Icon(i, color: kBlue),
+            title: Text(label, style: const TextStyle(fontSize: 12)),
+            subtitle: Text(v, style: const TextStyle(fontSize: 16)),
+          ),
+        );
+    return Scaffold(
+      appBar: bar('پروفایل'),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Center(
+          child: CircleAvatar(
+            radius: 44,
+            backgroundColor: kBlue,
+            foregroundColor: Colors.white,
+            child: Text(name.isEmpty ? '?' : name.characters.first,
+                style: const TextStyle(fontSize: 36)),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Center(
+            child: Text(name,
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+        const SizedBox(height: 16),
+        if (!admin && u != null) ...[
+          row(Icons.alternate_email, 'نام کاربری', u.username),
+          row(Icons.phone_android, 'شماره موبایل', fa(u.mobile)),
+          row(Icons.email, 'ایمیل', u.email),
+        ],
+        if (admin)
+          Card(
+            color: const Color(0xFFFFF3E0),
+            child: ListTile(
+              leading: const Icon(Icons.groups, color: Color(0xFFEF6C00)),
+              title: const Text('کاربران ثبت‌نام‌شده'),
+              subtitle: Text('تعداد: ${fa('${loadUsers().length}')}'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const UsersPage())),
+            ),
+          ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(
+              backgroundColor: Colors.redAccent, padding: const EdgeInsets.all(14)),
+          onPressed: onLogout,
+          icon: const Icon(Icons.logout),
+          label: const Text('خروج از حساب'),
+        ),
+      ]),
+    );
+  }
+}
+
+class UsersPage extends StatelessWidget {
+  const UsersPage({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final users = loadUsers();
+    return Scaffold(
+      appBar: bar('کاربران ثبت‌نام‌شده'),
+      body: ListView(padding: const EdgeInsets.all(12), children: [
+        const Padding(
+          padding: EdgeInsets.only(bottom: 8),
+          child: Text(
+              'این فهرست فقط کاربرانی را نشان می‌دهد که روی همین دستگاه ثبت‌نام کرده‌اند.',
+              style: TextStyle(fontSize: 12, color: Colors.black54)),
+        ),
+        if (users.isEmpty) const Center(child: Text('هنوز کاربری ثبت‌نام نکرده است')),
+        for (final u in users)
+          Card(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(u.full,
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Text('نام کاربری: ${u.username}'),
+                Text('موبایل: ${fa(u.mobile)}'),
+                Text('ایمیل: ${u.email}'),
+                Text(
+                    'تاریخ ثبت‌نام: ${fa(u.created.length >= 10 ? u.created.substring(0, 10) : u.created)}',
+                    style: const TextStyle(color: Colors.black54, fontSize: 12)),
+              ]),
+            ),
+          ),
+      ]),
+    );
+  }
+}
+
+// ---------------- ارتباط با ما ----------------
+class ContactPage extends StatelessWidget {
+  const ContactPage({super.key});
+  @override
+  Widget build(BuildContext context) {
+    Widget btn(IconData i, String t, String sub, Color c, String url) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => openUrl(context, url),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                  color: c, borderRadius: BorderRadius.circular(16)),
+              child: Row(children: [
+                Icon(i, color: Colors.white, size: 30),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(t,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold)),
+                    Text(sub,
+                        textDirection: TextDirection.ltr,
+                        style: const TextStyle(color: Colors.white70)),
+                  ]),
+                ),
+                const Icon(Icons.chevron_left, color: Colors.white),
+              ]),
+            ),
+          ),
+        );
+    return Scaffold(
+      appBar: bar('ارتباط با ما'),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Color(0xFF1E88E5), Color(0xFF0D47A1)]),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Column(children: [
+            Icon(Icons.favorite, color: Colors.white, size: 40),
+            SizedBox(height: 8),
+            Text('با ما در ارتباط باشید',
+                style: TextStyle(
+                    color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text(
+              'نظرات، پیشنهادها و انتقادات ارزشمند شما، چراغ راه بهبود «آزمون بساز» است. '
+              'در این بخش، دیدگاه‌های خود را با ما در میان بگذارید؛ '
+              'با افتخار می‌شنویم و در اسرع وقت پاسخگوی شما هستیم.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white, height: 1.8),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 20),
+        btn(Icons.chat, 'پیام در روبیکا', '@Veysi_ai', const Color(0xFF8E24AA),
+            'https://rubika.ir/Veysi_ai'),
+        btn(Icons.phone, 'تماس تلفنی', '09189301521', const Color(0xFF2E7D32),
+            'tel:09189301521'),
+        btn(Icons.sms, 'ارسال پیامک', '09189301521', const Color(0xFFEF6C00),
+            'sms:09189301521'),
+      ]),
+    );
+  }
+}
+
+// ---------------- خانه: ساخت آزمون ----------------
 class Home extends StatefulWidget {
-  const Home({super.key});
+  final String uid;
+  const Home({super.key, required this.uid});
   @override
   State<Home> createState() => _HomeState();
 }
@@ -341,30 +852,37 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   List<Q> qs = [];
   Hdr hdr = Hdr();
-  SharedPreferences? sp;
+  bool useHdr = true;
+
+  String get uid => widget.uid;
 
   @override
   void initState() {
     super.initState();
-    load();
-  }
-
-  Future<void> load() async {
-    sp = await SharedPreferences.getInstance();
-    final raw = sp!.getString('qs');
+    var migrated = false;
+    var raw = prefs.getString('qs_$uid');
+    var h = prefs.getString('hdr_$uid');
+    if (raw == null && prefs.getString('qs') != null) {
+      raw = prefs.getString('qs');
+      h ??= prefs.getString('hdr');
+      prefs.remove('qs');
+      prefs.remove('hdr');
+      migrated = true;
+    }
     if (raw != null) {
       qs = (jsonDecode(raw) as List).map((e) => Q.fromJson(e)).toList();
     }
-    final h = sp!.getString('hdr');
     if (h != null) {
       hdr = Hdr.fromJson(jsonDecode(h));
     }
-    setState(() {});
+    useHdr = prefs.getBool('usehdr_$uid') ?? true;
+    if (migrated) save();
   }
 
   void save() {
-    sp?.setString('qs', jsonEncode(qs.map((e) => e.toJson()).toList()));
-    sp?.setString('hdr', jsonEncode(hdr.toJson()));
+    prefs.setString('qs_$uid', jsonEncode(qs.map((e) => e.toJson()).toList()));
+    prefs.setString('hdr_$uid', jsonEncode(hdr.toJson()));
+    prefs.setBool('usehdr_$uid', useHdr);
   }
 
   double get total => qs.fold(0.0, (a, b) => a + b.points);
@@ -372,7 +890,6 @@ class _HomeState extends State<Home> {
   void msg(String s) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s)));
 
-  // نام فایل: درس + پایه
   String baseName() {
     final p = [hdr['subject'], hdr['grade']]
         .where((e) => e.trim().isNotEmpty)
@@ -464,7 +981,6 @@ class _HomeState extends State<Home> {
     return out;
   }
 
-  // ---------------- تحویل فایل: ذخیره مستقیم یا اشتراک‌گذاری ----------------
   Future<void> deliver(Uint8List bytes, String name, bool pdf) async {
     await showModalBottomSheet(
       context: context,
@@ -558,7 +1074,6 @@ class _HomeState extends State<Home> {
                 fontSize: size,
                 fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal));
 
-    // خط سؤال: فارسی راست‌چین، انگلیسی چپ‌چین
     pw.Widget qline(String s, {double size = 13}) {
       final rtl = isRtl(s);
       return pw.Align(
@@ -570,7 +1085,6 @@ class _HomeState extends State<Home> {
       );
     }
 
-    // متنی که اگر از سلول بزرگ‌تر شد، خودکار کوچک می‌شود
     pw.Widget fit(String s,
             {double size = 12,
             bool b = false,
@@ -582,7 +1096,6 @@ class _HomeState extends State<Home> {
           child: t(s, size: size, a: ta, bold: b),
         );
 
-    // عدد (ردیف و بارم): چپ‌به‌راست و بدون تغییر اندازه
     pw.Widget numText(String s, {double size = 12}) => pw.Text(s,
         textDirection: pw.TextDirection.ltr,
         textAlign: pw.TextAlign.center,
@@ -629,8 +1142,7 @@ class _HomeState extends State<Home> {
       ),
     );
 
-    // چپ: مشخصات امتحان | وسط: اداره/آموزشگاه | راست: مشخصات دانش‌آموز
-    final header = pw.Container(
+    final headerW = pw.Container(
       decoration: pw.BoxDecoration(border: pw.Border.all(width: 1.5)),
       child: pw.Row(children: [
         pw.Expanded(flex: 3, child: col(hdr.leftRows)),
@@ -676,26 +1188,46 @@ class _HomeState extends State<Home> {
               width: f.w * kFxScale, height: f.h * kFxScale, fit: pw.BoxFit.fill),
         ));
       }
+
       var hasImg = false;
+      var imgOnly = false;
       if (q.image != null && File(q.image!).existsSync()) {
         final sz = await imgSize(q.image!);
         if (sz != null) {
           hasImg = true;
-          final bw = q.imgW * kCm;
-          final bh = q.imgH * kCm;
-          final s = math.min(bw / sz.width, bh / sz.height);
-          content.add(pw.SizedBox(height: 4));
-          content.add(pw.Align(
-            alignment: q.imgAlign == 'l'
+          imgOnly = q.text.trim().isEmpty;
+          double w, h;
+          pw.Alignment al;
+          if (imgOnly) {
+            // تصویر به جای صورت سؤال: تمام عرض سلول، چسبیده به راست
+            w = 462;
+            h = w * sz.height / sz.width;
+            if (h > 640) {
+              h = 640;
+              w = h * sz.width / sz.height;
+            }
+            al = pw.Alignment.centerRight;
+          } else {
+            final bw = q.imgW * kCm;
+            final bh = q.imgH * kCm;
+            final s = math.min(bw / sz.width, bh / sz.height);
+            w = sz.width * s;
+            h = sz.height * s;
+            al = q.imgAlign == 'l'
                 ? pw.Alignment.centerLeft
                 : (q.imgAlign == 'r'
                     ? pw.Alignment.centerRight
-                    : pw.Alignment.center),
+                    : pw.Alignment.center);
+            content.add(pw.SizedBox(height: 4));
+          }
+          content.add(pw.Align(
+            alignment: al,
             child: pw.Image(pw.MemoryImage(File(q.image!).readAsBytesSync()),
-                width: sz.width * s, height: sz.height * s, fit: pw.BoxFit.fill),
+                width: w, height: h, fit: pw.BoxFit.fill),
           ));
         }
       }
+
       if (q.type == 'mc' && q.options.any((o) => o.isNotEmpty)) {
         content.add(pw.SizedBox(height: 4));
         final short = q.options.every((o) => o.length <= 14);
@@ -716,8 +1248,19 @@ class _HomeState extends State<Home> {
                 ? '(    ) صحیح          (    ) غلط'
                 : '(    ) True          (    ) False',
             size: 12));
-      } else if (q.type == 'desc' && !hasImg && fxs[i].isEmpty) {
-        content.add(pw.SizedBox(height: 45));
+      } else if (q.type == 'desc') {
+        // فضای پاسخ: به تعداد خط مشخص‌شده
+        final n = math.min(30, math.max(1, q.lines));
+        content.add(pw.SizedBox(height: 4));
+        for (var k = 0; k < n; k++) {
+          content.add(pw.Container(
+            height: 24,
+            decoration: pw.BoxDecoration(
+              border: pw.Border(
+                  bottom: pw.BorderSide(width: 0.4, color: PdfColors.grey600)),
+            ),
+          ));
+        }
       }
 
       rows.add(pw.TableRow(children: [
@@ -727,7 +1270,9 @@ class _HomeState extends State<Home> {
           child: numText(num2(q.points)),
         ),
         pw.Padding(
-          padding: const pw.EdgeInsets.all(8),
+          padding: imgOnly
+              ? const pw.EdgeInsets.fromLTRB(4, 4, 6, 4)
+              : const pw.EdgeInsets.all(8),
           child: pw.Column(
             mainAxisSize: pw.MainAxisSize.min,
             crossAxisAlignment: pw.CrossAxisAlignment.stretch,
@@ -740,9 +1285,9 @@ class _HomeState extends State<Home> {
           child: numText(fa('${i + 1}')),
         ),
       ]));
+      if (hasImg) {}
     }
 
-    // ستون‌ها از چپ به راست: بارم | متن سوالات | ردیف
     final table = pw.Table(
       border: pw.TableBorder.all(width: 1),
       columnWidths: {
@@ -757,7 +1302,7 @@ class _HomeState extends State<Home> {
     doc.addPage(pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
       margin: const pw.EdgeInsets.all(28),
-      build: (c) => [header, table],
+      build: (c) => [if (useHdr) headerW, table],
     ));
     return Uint8List.fromList(await doc.save());
   }
@@ -774,7 +1319,6 @@ class _HomeState extends State<Home> {
     final rels = StringBuffer();
     var imgId = 0;
 
-    // پاراگراف تصویر (بدون bidi تا چپ/راست دقیقاً همان چیزی باشد که کاربر خواسته)
     String addPic(List<int> bytes, int cx, int cy, String jc) {
       imgId++;
       final ext = (bytes.length > 1 && bytes[0] == 0x89) ? 'png' : 'jpeg';
@@ -796,32 +1340,32 @@ class _HomeState extends State<Home> {
 
     final body = StringBuffer();
 
-    // سربرگ (ستون اول جدول = سمت راست صفحه)
-    final midParas = hdr.midLines
-        .map((l) => pp(rp(l, sz: fitSz(l, 18, 40), b: true), center: true))
-        .join();
-    final right = hdr.rightRows;
-    final left = hdr.leftRows;
-    body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
-        '<w:gridCol w:w="3300"/><w:gridCol w:w="4100"/><w:gridCol w:w="3300"/></w:tblGrid>');
-    for (var i = 0; i < 5; i++) {
-      final midCell = i == 0
-          ? tcX(midParas, 4100, vm: '<w:vMerge w:val="restart"/>', va: 'center')
-          : tcX('<w:p/>', 4100, vm: '<w:vMerge/>');
-      body.write(trX(
-        tcX(pp(rp(right[i], sz: fitSz(right[i], 20, 26), b: true)), 3300,
-                va: 'center') +
-            midCell +
-            tcX(pp(rp(left[i], sz: fitSz(left[i], 20, 26), b: true)), 3300,
-                va: 'center'),
-        h: 420,
-      ));
+    if (useHdr) {
+      final midParas = hdr.midLines
+          .map((l) => pp(rp(l, sz: fitSz(l, 18, 40), b: true), center: true))
+          .join();
+      final right = hdr.rightRows;
+      final left = hdr.leftRows;
+      body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
+          '<w:gridCol w:w="3300"/><w:gridCol w:w="4100"/><w:gridCol w:w="3300"/></w:tblGrid>');
+      for (var i = 0; i < 5; i++) {
+        final midCell = i == 0
+            ? tcX(midParas, 4100, vm: '<w:vMerge w:val="restart"/>', va: 'center')
+            : tcX('<w:p/>', 4100, vm: '<w:vMerge/>');
+        body.write(trX(
+          tcX(pp(rp(right[i], sz: fitSz(right[i], 20, 26), b: true)), 3300,
+                  va: 'center') +
+              midCell +
+              tcX(pp(rp(left[i], sz: fitSz(left[i], 20, 26), b: true)), 3300,
+                  va: 'center'),
+          h: 420,
+        ));
+      }
+      body.write('</w:tbl>');
+      body.write(
+          '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>');
     }
-    body.write('</w:tbl>');
-    body.write(
-        '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>');
 
-    // جدول سؤال‌ها (ردیف | متن | بارم)
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
         '<w:gridCol w:w="560"/><w:gridCol w:w="9440"/><w:gridCol w:w="700"/></w:tblGrid>');
     body.write(trX(
@@ -848,19 +1392,32 @@ class _HomeState extends State<Home> {
         c.write(addPic(f.bytes, (f.w * kFxScale * 12700).round(),
             (f.h * kFxScale * 12700).round(), 'center'));
       }
-      var hasImg = false;
       if (q.image != null && File(q.image!).existsSync()) {
         final sz = await imgSize(q.image!);
         if (sz != null) {
-          hasImg = true;
-          final bw = q.imgW * 360000;
-          final bh = q.imgH * 360000;
-          final s = math.min(bw / sz.width, bh / sz.height);
+          final imgOnly = q.text.trim().isEmpty;
+          double cx, cy;
+          String jc;
+          if (imgOnly) {
+            // تصویر به جای صورت سؤال: تمام عرض سلول، چسبیده به راست
+            cx = 9000 * 635.0;
+            cy = cx * sz.height / sz.width;
+            const maxH = 7920000.0; // حدود ۲۲ سانتی‌متر
+            if (cy > maxH) {
+              cy = maxH;
+              cx = cy * sz.width / sz.height;
+            }
+            jc = 'right';
+          } else {
+            final bw = q.imgW * 360000;
+            final bh = q.imgH * 360000;
+            final s = math.min(bw / sz.width, bh / sz.height);
+            cx = sz.width * s;
+            cy = sz.height * s;
+            jc = q.imgAlign == 'l' ? 'left' : (q.imgAlign == 'r' ? 'right' : 'center');
+          }
           c.write(addPic(
-              File(q.image!).readAsBytesSync(),
-              (sz.width * s).round(),
-              (sz.height * s).round(),
-              q.imgAlign == 'l' ? 'left' : (q.imgAlign == 'r' ? 'right' : 'center')));
+              File(q.image!).readAsBytesSync(), cx.round(), cy.round(), jc));
         }
       }
       if (q.type == 'mc' && q.options.any((o) => o.isNotEmpty)) {
@@ -878,6 +1435,11 @@ class _HomeState extends State<Home> {
                 sz: 22,
                 rtl: rtlQ),
             rtl: rtlQ));
+      } else if (q.type == 'desc') {
+        final n = math.min(30, math.max(1, q.lines));
+        for (var k = 0; k < n; k++) {
+          c.write(ruledLine());
+        }
       }
       if (c.isEmpty) c.write('<w:p/>');
       body.write(trX(
@@ -887,7 +1449,7 @@ class _HomeState extends State<Home> {
             tcX(c.toString(), 9440) +
             tcX(pp(rp(num2(q.points), sz: 22, rtl: false), center: true, rtl: false),
                 700),
-        h: (q.type == 'desc' && !hasImg && fxs[i].isEmpty) ? 1400 : 600,
+        h: 600,
       ));
     }
     body.write('</w:tbl><w:p/>');
@@ -950,27 +1512,71 @@ class _HomeState extends State<Home> {
         label: const Text('افزودن سؤال'),
       ),
       body: Column(children: [
+        // انتخاب سربرگ + کلید روشن/خاموش
         Padding(
-          padding: const EdgeInsets.all(12),
-          child: Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: ListTile(
-              leading: const Icon(Icons.badge, color: kBlue),
-              title: Text(hdr['school'].isEmpty ? 'سربرگ آزمون' : hdr['school']),
-              subtitle: Text(
-                  'درس: ${hdr['subject']}   پایه: ${hdr['grade']}   (برای ویرایش بزنید)'),
-              trailing: const Icon(Icons.edit, color: kBlue),
-              onTap: editHeader,
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+          child: Row(children: [
+            Expanded(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: useHdr ? editHeader : null,
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                        colors: useHdr
+                            ? [const Color(0xFFFF9800), const Color(0xFFEF6C00)]
+                            : [Colors.grey.shade400, Colors.grey.shade500]),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.badge, color: Colors.white),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('انتخاب سربرگ',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16)),
+                            Text(
+                                hdr['school'].isEmpty
+                                    ? 'برای ویرایش مشخصات سربرگ بزنید'
+                                    : '${hdr['school']}  ${hdr['subject']} ${hdr['grade']}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12)),
+                          ]),
+                    ),
+                    const Icon(Icons.edit, color: Colors.white),
+                  ]),
+                ),
+              ),
             ),
-          ),
+            const SizedBox(width: 6),
+            Switch(
+              value: useHdr,
+              onChanged: (v) {
+                setState(() => useHdr = v);
+                save();
+              },
+            ),
+          ]),
         ),
-        Text('تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}',
-            style: const TextStyle(color: kBlue, fontWeight: FontWeight.bold)),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+              'تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}',
+              style: const TextStyle(color: kBlue, fontWeight: FontWeight.bold)),
+        ),
         Expanded(
           child: qs.isEmpty
               ? const Center(child: Text('هنوز سؤالی ندارید'))
               : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 90),
                   itemCount: qs.length,
                   itemBuilder: (c, i) {
                     final q = qs[i];
@@ -1047,6 +1653,7 @@ class _HeaderEditorState extends State<HeaderEditor> {
   }
 }
 
+// ---------------- ویرایش سؤال ----------------
 class Editor extends StatefulWidget {
   final Q? q;
   const Editor({super.key, this.q});
@@ -1055,20 +1662,22 @@ class Editor extends StatefulWidget {
 }
 
 class _EditorState extends State<Editor> {
-  String type = 'mc';
+  String type = 'desc'; // پیش‌فرض: تشریحی
   String? image;
   double imgW = 10, imgH = 6;
   String imgAlign = 'c';
+  bool showFx = false;
   final text = TextEditingController();
   final formula = TextEditingController();
   final pts = TextEditingController(text: '1');
+  final lines = TextEditingController();
   final opts = List.generate(4, (_) => TextEditingController());
 
   static const syms = <(String, String, int)>[
-    ('a/b', r'\frac{}{}', 3),
-    ('xⁿ', r'^{}', 1),
-    ('xₙ', r'_{}', 1),
-    ('√', r'\sqrt{}', 1),
+    ('کسر  a⁄b', r'\frac{}{}', 3),
+    ('توان  xⁿ', r'^{}', 1),
+    ('اندیس  xₙ', r'_{}', 1),
+    ('ریشه  √', r'\sqrt{}', 1),
     ('π', r'\pi ', 0),
     ('≤', r'\leq ', 0),
     ('≥', r'\geq ', 0),
@@ -1095,11 +1704,13 @@ class _EditorState extends State<Editor> {
       type = q.type;
       text.text = q.text;
       formula.text = q.formula;
+      showFx = q.formula.isNotEmpty;
       pts.text = q.points.toString();
       image = q.image;
       imgW = q.imgW.clamp(1.0, 16.0).toDouble();
       imgH = q.imgH.clamp(1.0, 15.0).toDouble();
       imgAlign = q.imgAlign;
+      lines.text = q.lines > 1 ? '${q.lines}' : '';
       for (var i = 0; i < 4; i++) {
         opts[i].text = q.options[i];
       }
@@ -1141,64 +1752,71 @@ class _EditorState extends State<Editor> {
 
   @override
   Widget build(BuildContext context) {
-    final lines =
+    final fLines =
         formula.text.split('\n').where((e) => e.trim().isNotEmpty).toList();
+    final imgOnly = text.text.trim().isEmpty && image != null;
     return Scaffold(
       appBar: bar('سؤال'),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         SegmentedButton<String>(
           segments: const [
-            ButtonSegment(value: 'mc', label: Text('چهارگزینه‌ای')),
-            ButtonSegment(value: 'tf', label: Text('صحیح/غلط')),
             ButtonSegment(value: 'desc', label: Text('تشریحی')),
+            ButtonSegment(value: 'tf', label: Text('صحیح/غلط')),
+            ButtonSegment(value: 'mc', label: Text('چهارگزینه‌ای')),
           ],
           selected: {type},
           onSelectionChanged: (s) => setState(() => type = s.first),
         ),
         const SizedBox(height: 16),
         field(text, 'متن سؤال (اگر صورت سؤال در تصویر است، خالی بگذارید)',
-            lines: 2),
+            lines: 2, onChanged: (_) => setState(() {})),
 
-        // ---- باکس فرمول ----
-        const Text('باکس فرمول و عبارت ریاضی (اختیاری)',
-            style: TextStyle(fontWeight: FontWeight.bold, color: kBlue)),
-        const SizedBox(height: 6),
-        Wrap(spacing: 6, runSpacing: 0, children: [
-          for (final s in syms)
-            ActionChip(
-              label: Text(s.$1, style: const TextStyle(fontSize: 16)),
-              onPressed: () => ins(s.$2, s.$3),
-            ),
-        ]),
-        const SizedBox(height: 6),
-        TextField(
-          controller: formula,
-          textDirection: TextDirection.ltr,
-          minLines: 2,
-          maxLines: 5,
-          onChanged: (_) => setState(() {}),
-          style: const TextStyle(fontFamily: 'monospace'),
-          decoration: InputDecoration(
-            filled: true,
-            fillColor: Colors.white,
-            labelText: 'هر خط یک فرمول، مثال: x^{2}+\\frac{1}{2}',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-          ),
+        // ---- دکمه فرمول ریاضی ----
+        OutlinedButton.icon(
+          onPressed: () => setState(() => showFx = !showFx),
+          icon: const Icon(Icons.functions),
+          label: Text(showFx ? 'بستن فرمول ریاضی' : 'فرمول ریاضی'),
         ),
-        for (final l in lines)
-          Container(
-            margin: const EdgeInsets.only(top: 6),
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-                color: Colors.white, borderRadius: BorderRadius.circular(12)),
-            child: Directionality(
-              textDirection: TextDirection.ltr,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Math.tex(l.trim(), textStyle: const TextStyle(fontSize: 22)),
+        if (showFx) ...[
+          const SizedBox(height: 8),
+          Wrap(spacing: 6, runSpacing: 0, children: [
+            for (final s in syms)
+              ActionChip(
+                label: Text(s.$1, style: const TextStyle(fontSize: 15)),
+                onPressed: () => ins(s.$2, s.$3),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          TextField(
+            controller: formula,
+            textDirection: TextDirection.ltr,
+            minLines: 2,
+            maxLines: 5,
+            onChanged: (_) => setState(() {}),
+            style: const TextStyle(fontFamily: 'monospace'),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: Colors.white,
+              labelText: 'هر خط یک فرمول (با دکمه‌های بالا بنویسید)',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+          ),
+          for (final l in fLines)
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                  color: Colors.white, borderRadius: BorderRadius.circular(12)),
+              child: Directionality(
+                textDirection: TextDirection.ltr,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child:
+                      Math.tex(l.trim(), textStyle: const TextStyle(fontSize: 22)),
+                ),
               ),
             ),
-          ),
+        ],
         const SizedBox(height: 16),
 
         // ---- تصویر ----
@@ -1209,45 +1827,58 @@ class _EditorState extends State<Editor> {
         ),
         if (image != null) ...[
           const SizedBox(height: 8),
-          Align(
-            alignment: imgAlign == 'l'
-                ? Alignment.centerLeft
-                : (imgAlign == 'r' ? Alignment.centerRight : Alignment.center),
-            child: SizedBox(
-              width: imgW * 20,
-              height: imgH * 20,
-              child: Image.file(File(image!), fit: BoxFit.contain),
+          if (imgOnly) ...[
+            Container(
+              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFE3F2FD),
+                  borderRadius: BorderRadius.circular(12)),
+              child: const Text(
+                  'چون متن سؤال خالی است، تصویر به‌عنوان صورت سؤال و با عرض کامل سلول چاپ می‌شود.'),
             ),
-          ),
-          Text('عرض: ${num2(imgW)} سانتی‌متر'),
-          Slider(
-            value: imgW,
-            min: 1,
-            max: 16,
-            divisions: 150,
-            onChanged: (v) =>
-                setState(() => imgW = double.parse(v.toStringAsFixed(1))),
-          ),
-          Text('ارتفاع: ${num2(imgH)} سانتی‌متر'),
-          Slider(
-            value: imgH,
-            min: 1,
-            max: 15,
-            divisions: 140,
-            onChanged: (v) =>
-                setState(() => imgH = double.parse(v.toStringAsFixed(1))),
-          ),
-          const Text('جایگاه تصویر'),
-          const SizedBox(height: 4),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'l', label: Text('چپ')),
-              ButtonSegment(value: 'c', label: Text('وسط')),
-              ButtonSegment(value: 'r', label: Text('راست')),
-            ],
-            selected: {imgAlign},
-            onSelectionChanged: (s) => setState(() => imgAlign = s.first),
-          ),
+            Image.file(File(image!), fit: BoxFit.contain),
+          ] else ...[
+            Align(
+              alignment: imgAlign == 'l'
+                  ? Alignment.centerLeft
+                  : (imgAlign == 'r' ? Alignment.centerRight : Alignment.center),
+              child: SizedBox(
+                width: imgW * 20,
+                height: imgH * 20,
+                child: Image.file(File(image!), fit: BoxFit.contain),
+              ),
+            ),
+            Text('عرض: ${num2(imgW)} سانتی‌متر'),
+            Slider(
+              value: imgW,
+              min: 1,
+              max: 16,
+              divisions: 150,
+              onChanged: (v) =>
+                  setState(() => imgW = double.parse(v.toStringAsFixed(1))),
+            ),
+            Text('ارتفاع: ${num2(imgH)} سانتی‌متر'),
+            Slider(
+              value: imgH,
+              min: 1,
+              max: 15,
+              divisions: 140,
+              onChanged: (v) =>
+                  setState(() => imgH = double.parse(v.toStringAsFixed(1))),
+            ),
+            const Text('جایگاه تصویر'),
+            const SizedBox(height: 4),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'l', label: Text('چپ')),
+                ButtonSegment(value: 'c', label: Text('وسط')),
+                ButtonSegment(value: 'r', label: Text('راست')),
+              ],
+              selected: {imgAlign},
+              onSelectionChanged: (s) => setState(() => imgAlign = s.first),
+            ),
+          ],
           TextButton.icon(
             onPressed: () => setState(() => image = null),
             icon: const Icon(Icons.delete, color: Colors.redAccent),
@@ -1257,6 +1888,9 @@ class _EditorState extends State<Editor> {
         const SizedBox(height: 12),
         if (type == 'mc')
           for (var i = 0; i < 4; i++) field(opts[i], 'گزینه ${kLabels[i]}'),
+        if (type == 'desc')
+          field(lines, 'تعداد خط پاسخ (اگر خالی باشد، ۱ خط)',
+              kb: TextInputType.number),
         field(pts, 'بارم (نمره) - مثال: ۲/۵',
             kb: const TextInputType.numberWithOptions(decimal: true)),
         FilledButton(
@@ -1282,6 +1916,8 @@ class _EditorState extends State<Editor> {
                   imgW: imgW,
                   imgH: imgH,
                   imgAlign: imgAlign,
+                  lines: math.min(
+                      30, math.max(1, int.tryParse(toEn(lines.text.trim())) ?? 1)),
                 ));
           },
           child: const Text('ثبت سؤال', style: TextStyle(fontSize: 16)),
