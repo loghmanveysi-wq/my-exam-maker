@@ -39,6 +39,39 @@ jobs:
           rm -rf test
           sed -i 's/android:label="[^"]*"/android:label="آزمون بساز"/' android/app/src/main/AndroidManifest.xml
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set app icon
+        run: |
+          if [ -f assets/icon.png ]; then
+            pip install pillow
+            python3 - assets/icon.png android/app/src/main/res <<'PY'
+          import sys, os
+          from PIL import Image, ImageChops, ImageDraw
+          im = Image.open(sys.argv[1]).convert('RGB')
+          bg = Image.new('RGB', im.size, (255, 255, 255))
+          diff = ImageChops.difference(im, bg).convert('L').point(lambda v: 255 if v > 24 else 0)
+          l, t, r, b = diff.getbbox() or (0, 0, im.width, im.height)
+          side = max(r - l, b - t)
+          cx, cy = (l + r) // 2, (t + b) // 2
+          im = im.crop((cx - side // 2, cy - side // 2, cx - side // 2 + side, cy - side // 2 + side))
+          S = 4
+          mask = Image.new('L', (side * S, side * S), 0)
+          ImageDraw.Draw(mask).ellipse((0, 0, side * S - 1, side * S - 1), fill=255)
+          out = im.convert('RGBA')
+          out.putalpha(mask.resize((side, side), Image.LANCZOS))
+          for k, v in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
+              d = os.path.join(sys.argv[2], 'mipmap-' + k)
+              os.makedirs(d, exist_ok=True)
+              out.resize((v, v), Image.LANCZOS).save(os.path.join(d, 'ic_launcher.png'))
+          print('icons written')
+          PY
+          else
+            echo "::warning::assets/icon.png not found, default icon used"
+          fi
+
       - name: Use release signing key
         run: |
           python3 - <<'PY'
