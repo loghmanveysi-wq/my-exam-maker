@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,11 +22,46 @@ jobs:
         with:
           channel: stable
 
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD are missing"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
       - name: Create Android project
         run: |
           flutter create . --platforms=android --project-name ozmoon_besaz
           rm -rf test
           sed -i 's/android:label="[^"]*"/android:label="آزمون بساز"/' android/app/src/main/AndroidManifest.xml
+
+      - name: Use release signing key
+        run: |
+          python3 - <<'PY'
+          p = 'android/app/build.gradle.kts'
+          s = open(p, encoding='utf-8').read()
+          block = '''    signingConfigs {
+              create("release") {
+                  storeFile = file(System.getenv("KEYSTORE_PATH"))
+                  storePassword = System.getenv("KEYSTORE_PASSWORD")
+                  keyAlias = "azmoon"
+                  keyPassword = System.getenv("KEYSTORE_PASSWORD")
+              }
+          }
+
+          buildTypes {'''
+          assert 'buildTypes {' in s, 'buildTypes not found'
+          s = s.replace('buildTypes {', block, 1)
+          old = 'signingConfig = signingConfigs.getByName("debug")'
+          assert old in s, 'debug signing line not found'
+          s = s.replace(old, 'signingConfig = signingConfigs.getByName("release")')
+          open(p, 'w', encoding='utf-8').write(s)
+          print('patched')
+          PY
 
       - name: Download Persian font
         run: |
@@ -33,7 +70,7 @@ jobs:
 
       - run: flutter pub get
 
-      - run: flutter build apk --release
+      - run: flutter build apk --release --build-number=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
