@@ -328,7 +328,6 @@ String tcX(String inner, int w,
 
 String trX(String cells, {int h = 0}) =>
     '<w:tr>${h > 0 ? '<w:trPr><w:cantSplit/><w:trHeight w:val="$h" w:hRule="atLeast"/></w:trPr>' : ''}$cells</w:tr>';
-
 String tblPr(int inner) =>
     '<w:tblPr><w:bidiVisual/><w:tblW w:w="10700" w:type="dxa"/><w:tblBorders>'
     '<w:top w:val="single" w:sz="18" w:space="0" w:color="000000"/>'
@@ -697,8 +696,7 @@ class ProfilePage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Center(
-            child: Text(name,
+        Center(child: Text(name,
                 style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
         const SizedBox(height: 16),
         if (!admin && u != null) ...[
@@ -1057,8 +1055,7 @@ class _HomeState extends State<Home> {
     pw.Font fBold;
     try {
       fBold = await lf('assets/fonts/BNazaninBold.ttf');
-    } catch (_) {
-      fBold = fBase;
+    } catch (_) {fBold = fBase;
     }
     final doc =
         pw.Document(theme: pw.ThemeData.withFont(base: fBase, bold: fBold));
@@ -1093,7 +1090,10 @@ class _HomeState extends State<Home> {
         pw.FittedBox(
           fit: pw.BoxFit.scaleDown,
           alignment: al,
-          child: t(s, size: size, a: ta, bold: b),
+          child: pw.Padding(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 5),
+            child: t(s, size: size, a: ta, bold: b),
+          ),
         );
 
     pw.Widget numText(String s, {double size = 12}) => pw.Text(s,
@@ -1252,15 +1252,7 @@ class _HomeState extends State<Home> {
         // فضای پاسخ: به تعداد خط مشخص‌شده
         final n = math.min(30, math.max(1, q.lines));
         content.add(pw.SizedBox(height: 4));
-        for (var k = 0; k < n; k++) {
-          content.add(pw.Container(
-            height: 24,
-            decoration: pw.BoxDecoration(
-              border: pw.Border(
-                  bottom: pw.BorderSide(width: 0.4, color: PdfColors.grey600)),
-            ),
-          ));
-        }
+        content.add(pw.SizedBox(height: 24.0 * n));
       }
 
       rows.add(pw.TableRow(children: [
@@ -1291,7 +1283,7 @@ class _HomeState extends State<Home> {
     final table = pw.Table(
       border: pw.TableBorder.all(width: 1),
       columnWidths: {
-        0: const pw.FixedColumnWidth(36),
+        0: const pw.FixedColumnWidth(26),
         1: const pw.FlexColumnWidth(),
         2: const pw.FixedColumnWidth(28),
       },
@@ -1367,13 +1359,13 @@ class _HomeState extends State<Home> {
     }
 
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
-        '<w:gridCol w:w="560"/><w:gridCol w:w="9440"/><w:gridCol w:w="700"/></w:tblGrid>');
+        '<w:gridCol w:w="560"/><w:gridCol w:w="9620"/><w:gridCol w:w="520"/></w:tblGrid>');
     body.write(trX(
         tcX(pp(rp('ردیف', sz: 18, b: true), center: true), 560,
                 td: true, va: 'center') +
-            tcX(pp(rp('متن سوالات', sz: 22, b: true), center: true), 9440,
+            tcX(pp(rp('متن سوالات', sz: 22, b: true), center: true), 9620,
                 va: 'center') +
-            tcX(pp(rp('بارم', sz: 18, b: true), center: true), 700,
+            tcX(pp(rp('بارم', sz: 18, b: true), center: true), 520,
                 td: true, va: 'center'),
         h: 800));
 
@@ -1438,7 +1430,8 @@ class _HomeState extends State<Home> {
       } else if (q.type == 'desc') {
         final n = math.min(30, math.max(1, q.lines));
         for (var k = 0; k < n; k++) {
-          c.write(ruledLine());
+          c.write(
+              '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="480" w:lineRule="exact"/></w:pPr></w:p>');
         }
       }
       if (c.isEmpty) c.write('<w:p/>');
@@ -1446,9 +1439,9 @@ class _HomeState extends State<Home> {
         tcX(pp(rp(fa('${i + 1}'), sz: 22, rtl: false), center: true, rtl: false),
                 560,
                 va: 'center') +
-            tcX(c.toString(), 9440) +
+            tcX(c.toString(), 9620) +
             tcX(pp(rp(num2(q.points), sz: 22, rtl: false), center: true, rtl: false),
-                700),
+                520),
         h: 600,
       ));
     }
@@ -1501,8 +1494,7 @@ class _HomeState extends State<Home> {
     return Scaffold(
       appBar: bar('آزمون بساز', actions: [
         actBtn(Icons.description, 'ورد', exportDocx),
-        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),
-        const SizedBox(width: 8),
+        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),const SizedBox(width: 8),
       ]),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: kBlue,
