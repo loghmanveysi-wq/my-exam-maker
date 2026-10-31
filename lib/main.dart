@@ -307,6 +307,7 @@ class Q {
   double imgH;
   String imgAlign; // l, c, r
   int lines; // تعداد خط پاسخ (تشریحی)
+  bool imgManual; // تغییر دستی اندازه‌ی تصویرِ سؤال تصویری
   Q({
     required this.type,
     required this.text,
@@ -317,7 +318,8 @@ class Q {
     this.imgW = 10,
     this.imgH = 6,
     this.imgAlign = 'c',
-    this.lines = 1,
+    this.lines = 0,
+    this.imgManual = false,
   }) : options = options ?? ['', '', '', ''];
   Map<String, dynamic> toJson() => {
         'type': type,
@@ -330,6 +332,7 @@ class Q {
         'imgH': imgH,
         'imgAlign': imgAlign,
         'lines': lines,
+        'imgManual': imgManual,
       };
   factory Q.fromJson(Map<String, dynamic> j) => Q(
         type: j['type'],
@@ -341,7 +344,8 @@ class Q {
         imgW: (j['imgW'] as num?)?.toDouble() ?? 10,
         imgH: (j['imgH'] as num?)?.toDouble() ?? 6,
         imgAlign: j['imgAlign'] ?? 'c',
-        lines: (j['lines'] as num?)?.toInt() ?? 1,
+        lines: (j['lines'] as num?)?.toInt() ?? 0,
+        imgManual: j['imgManual'] == true,
       );
 }
 
@@ -1345,7 +1349,7 @@ class _HomeState extends State<Home> {
         final sz = await imgSize(q.image!);
         if (sz != null) {
           hasImg = true;
-          imgOnly = q.text.trim().isEmpty;
+          imgOnly = q.text.trim().isEmpty && !q.imgManual;
           double w, h;
           pw.Alignment al;
           if (imgOnly) {
@@ -1400,9 +1404,11 @@ class _HomeState extends State<Home> {
             size: 12));
       } else if (q.type == 'desc') {
         // فضای پاسخ: به تعداد خط مشخص‌شده
-        final n = math.min(30, math.max(1, q.lines));
-        content.add(pw.SizedBox(height: 4));
-        content.add(pw.SizedBox(height: 24.0 * n));
+        final n = math.min(30, math.max(0, q.lines));
+        if (n > 0) {
+          content.add(pw.SizedBox(height: 4));
+          content.add(pw.SizedBox(height: 24.0 * n));
+        }
       }
 
       rows.add(pw.TableRow(children: [
@@ -1547,7 +1553,7 @@ class _HomeState extends State<Home> {
       if (q.image != null && File(q.image!).existsSync()) {
         final sz = await imgSize(q.image!);
         if (sz != null) {
-          final imgOnly = q.text.trim().isEmpty;
+          final imgOnly = q.text.trim().isEmpty && !q.imgManual;
           double cx, cy;
           String jc;
           if (imgOnly) {
@@ -1588,7 +1594,7 @@ class _HomeState extends State<Home> {
                 rtl: rtlQ),
             rtl: rtlQ));
       } else if (q.type == 'desc') {
-        final n = math.min(30, math.max(1, q.lines));
+        final n = math.min(30, math.max(0, q.lines));
         for (var k = 0; k < n; k++) {
           c.write(
               '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="480" w:lineRule="exact"/></w:pPr></w:p>');
@@ -1819,6 +1825,7 @@ class _EditorState extends State<Editor> {
   String? image;
   double imgW = 10, imgH = 6;
   String imgAlign = 'c';
+  bool manual = false;
   bool showFx = false;
   final text = TextEditingController();
   final formula = TextEditingController();
@@ -1877,7 +1884,8 @@ class _EditorState extends State<Editor> {
       imgW = q.imgW.clamp(1.0, 16.0).toDouble();
       imgH = q.imgH.clamp(1.0, 15.0).toDouble();
       imgAlign = q.imgAlign;
-      lines.text = q.lines > 1 ? '${q.lines}' : '';
+      manual = q.imgManual;
+      lines.text = q.lines > 0 ? '${q.lines}' : '';
       for (var i = 0; i < 4; i++) {
         opts[i].text = q.options[i];
       }
@@ -1934,6 +1942,25 @@ class _EditorState extends State<Editor> {
         content: Text('فرمول در متن سؤال درج شد. فرمول بعدی را بنویسید.')));
   }
 
+  Future<void> startManual() async {
+    var w = 16.0;
+    var h = 10.0;
+    final sz = image == null ? null : await imgSize(image!);
+    if (sz != null) {
+      h = w * sz.height / sz.width;
+      if (h > 15) {
+        h = 15;
+        w = h * sz.width / sz.height;
+      }
+    }
+    setState(() {
+      manual = true;
+      imgW = double.parse(w.clamp(1.0, 16.0).toStringAsFixed(1));
+      imgH = double.parse(h.clamp(1.0, 15.0).toStringAsFixed(1));
+      imgAlign = 'r';
+    });
+  }
+
   Future<void> choose() async {
     final p = await pickImage();
     if (p == null) return;
@@ -1958,7 +1985,7 @@ class _EditorState extends State<Editor> {
   Widget build(BuildContext context) {
     final fLines =
         formula.text.split('\n').where((e) => e.trim().isNotEmpty).toList();
-    final imgOnly = text.text.trim().isEmpty && image != null;
+    final imgOnly = text.text.trim().isEmpty && image != null && !manual;
     return Scaffold(
       appBar: bar('سؤال'),
       body: ListView(padding: const EdgeInsets.all(16), children: [
@@ -2092,7 +2119,19 @@ class _EditorState extends State<Editor> {
                   'چون متن سؤال خالی است، تصویر به‌عنوان صورت سؤال و با عرض کامل سلول چاپ می‌شود.'),
             ),
             Image.file(File(image!), fit: BoxFit.contain),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: startManual,
+              icon: const Icon(Icons.aspect_ratio),
+              label: const Text('تغییر اندازه‌ی تصویر'),
+            ),
           ] else ...[
+            if (text.text.trim().isEmpty)
+              OutlinedButton.icon(
+                onPressed: () => setState(() => manual = false),
+                icon: const Icon(Icons.fit_screen),
+                label: const Text('برگشت به عرض کامل'),
+              ),
             Align(
               alignment: imgAlign == 'l'
                   ? Alignment.centerLeft
@@ -2143,7 +2182,7 @@ class _EditorState extends State<Editor> {
         if (type == 'mc')
           for (var i = 0; i < 4; i++) field(opts[i], 'گزینه ${kLabels[i]}'),
         if (type == 'desc')
-          field(lines, 'تعداد خط پاسخ (اگر خالی باشد، ۱ خط)',
+          field(lines, 'تعداد خط پاسخ (خالی یا ۰ = بدون فضای پاسخ)',
               kb: TextInputType.number),
         field(pts, 'بارم (نمره) - مثال: ۲/۵',
             kb: const TextInputType.numberWithOptions(decimal: true)),
@@ -2170,8 +2209,9 @@ class _EditorState extends State<Editor> {
                   imgW: imgW,
                   imgH: imgH,
                   imgAlign: imgAlign,
+                  imgManual: manual,
                   lines: math.min(
-                      30, math.max(1, int.tryParse(toEn(lines.text.trim())) ?? 1)),
+                      30, math.max(0, int.tryParse(toEn(lines.text.trim())) ?? 0)),
                 ));
           },
           child: const Text('ثبت سؤال', style: TextStyle(fontSize: 16)),
