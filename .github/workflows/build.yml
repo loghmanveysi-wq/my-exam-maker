@@ -47,7 +47,7 @@ jobs:
         run: |
           if [ -f assets/icon.png ]; then
             pip install pillow
-            python3 - assets/icon.png android/app/src/main/res <<'PY'
+            python3 - assets/icon.png android/app/src/main/res assets/logo.png <<'PY'
           import sys, os
           from PIL import Image, ImageChops, ImageDraw
           im = Image.open(sys.argv[1]).convert('RGB')
@@ -66,8 +66,12 @@ jobs:
               d = os.path.join(sys.argv[2], 'mipmap-' + k)
               os.makedirs(d, exist_ok=True)
               out.resize((v, v), Image.LANCZOS).save(os.path.join(d, 'ic_launcher.png'))
+          out.resize((256, 256), Image.LANCZOS).save(sys.argv[3])
           print('icons written')
           PY
+            if ! grep -q "assets/logo.png" pubspec.yaml; then
+              sed -i 's#^\([[:space:]]*\)- assets/fonts/#&\n\1- assets/logo.png#' pubspec.yaml
+            fi
           else
             echo "::warning::assets/icon.png not found, default icon used"
           fi
