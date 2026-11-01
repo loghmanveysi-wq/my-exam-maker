@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -9,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
+import 'package:flutter_poolakey/flutter_poolakey.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -82,6 +84,89 @@ bool isRtl(String s) {
     if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) return false;
   }
   return true;
+}
+
+// ---------------- محدودیت رایگان و خرید از کافه‌بازار ----------------
+const kFreeExams = 3;
+const kProductId = 'premium_full';
+const kBazaarKey =
+    'MIHNMA0GCSqGSIb3DQEBAQUAA4G7ADCBtwKBrwC20MJaoLt95AGylGqEsm4zPphkWjbOAV3+M7Dft1cXEgrcIOz/awkVP3archjfG+ub9plvQLfstgLqttR3Zw5bP/e2ibmM8mFxrE+jWsm/sCJ6Gs1lyZ/S8BuYdzPoZRUfpNas1Avsn0FTGBmVLR3fSG3uWbxPLjMUeIencsOs67Jsgsv2Ew4mZMz4X9+/1CrTtNVZyIZsIW/UuyCPv8OC4S/cJA6FmCQavTC/tn0CAwEAAQ==';
+
+class Lic {
+  static const _kPrem = 'is_premium';
+  static const _kUsed = 'used_exams';
+
+  static bool get premium => prefs.getBool(_kPrem) ?? false;
+  static Set<String> _used() => (prefs.getStringList(_kUsed) ?? []).toSet();
+  static int get usedCount => _used().length;
+  static int get left => math.max(0, kFreeExams - usedCount);
+
+  // آزمونی که قبلاً شمرده شده (همان محتوا) دوباره شمرده نمی‌شود
+  static bool canExport(String id) =>
+      premium || _used().contains(id) || usedCount < kFreeExams;
+
+  static Future<void> register(String id) async {
+    if (premium) return;
+    final u = _used()..add(id);
+    await prefs.setStringList(_kUsed, u.toList());
+  }
+
+  static Future<bool> _connect() async {
+    final c = Completer<bool>();
+    try {
+      await FlutterPoolakey.connect(
+        kBazaarKey,
+        onSucceed: () {
+          if (!c.isCompleted) c.complete(true);
+        },
+        onFailed: () {
+          if (!c.isCompleted) c.complete(false);
+        },
+        onDisconnected: () {},
+      );
+    } catch (_) {
+      return false;
+    }
+    return c.future.timeout(const Duration(seconds: 10), onTimeout: () => false);
+  }
+
+  static Future<void> _disconnect() async {
+    try {
+      await FlutterPoolakey.disconnect();
+    } catch (_) {}
+  }
+
+  // null یعنی خرید موفق بود؛ در غیر این صورت متن خطا
+  static Future<String?> buy() async {
+    if (!await _connect()) {
+      return 'اتصال به کافه‌بازار برقرار نشد. مطمئن شوید کافه‌بازار نصب است و وارد حساب خود شده‌اید.';
+    }
+    try {
+      await FlutterPoolakey.purchase(kProductId);
+      await prefs.setBool(_kPrem, true);
+      return null;
+    } catch (_) {
+      return 'خرید انجام نشد.';
+    } finally {
+      await _disconnect();
+    }
+  }
+
+  static Future<bool> restore() async {
+    if (!await _connect()) return false;
+    try {
+      final p = await FlutterPoolakey.queryPurchasedProduct(kProductId);
+      if (p != null) {
+        await prefs.setBool(_kPrem, true);
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    } finally {
+      await _disconnect();
+    }
+  }
 }
 
 // ---------------- حساب کاربری ----------------
@@ -1167,14 +1252,74 @@ class _HomeState extends State<Home> {
     );
   }
 
+  String examId() => sha(jsonEncode(qs.map((e) => e.toJson()).toList()) +
+      jsonEncode(hdr.toJson()) +
+      useHdr.toString());
+
+  Future<void> showPaywall() async {
+    await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('پایان آزمون‌های رایگان'),
+        content: Text(
+            '${fa('$kFreeExams')} آزمون رایگان شما تمام شد. برای ساخت آزمون‌های نامحدود، نسخه‌ی کامل را از کافه‌بازار بخرید. خرید فقط یک بار انجام می‌شود.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text('بعداً')),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(c);
+              msg('در حال بررسی خرید...');
+              final ok = await Lic.restore();
+              if (!mounted) return;
+              setState(() {});
+              msg(ok
+                  ? 'خرید شما بازیابی شد'
+                  : 'خریدی برای این حساب کافه‌بازار پیدا نشد');
+            },
+            child: const Text('بازیابی خرید'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(c);
+              final err = await Lic.buy();
+              if (!mounted) return;
+              setState(() {});
+              msg(err ?? 'خرید موفق بود. نسخه‌ی کامل فعال شد.');
+            },
+            child: const Text('خرید نسخه‌ی کامل'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> exportPdf() async {
+    final id = examId();
+    if (qs.isNotEmpty && !Lic.canExport(id)) {
+      await showPaywall();
+      return;
+    }
     final b = await buildPdf();
-    if (b != null) await deliver(b, '${baseName()}.pdf', true);
+    if (b != null) {
+      await Lic.register(id);
+      if (mounted) setState(() {});
+      await deliver(b, '${baseName()}.pdf', true);
+    }
   }
 
   Future<void> exportDocx() async {
+    final id = examId();
+    if (qs.isNotEmpty && !Lic.canExport(id)) {
+      await showPaywall();
+      return;
+    }
     final b = await buildDocx();
-    if (b != null) await deliver(b, '${baseName()}.docx', false);
+    if (b != null) {
+      await Lic.register(id);
+      if (mounted) setState(() {});
+      await deliver(b, '${baseName()}.docx', false);
+    }
   }
 
   // ---------------- ساخت PDF ----------------
@@ -1790,7 +1935,7 @@ class _HomeState extends State<Home> {
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Text(
-              'تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}',
+              'تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}${Lic.premium ? '' : '   |   آزمون رایگان باقی‌مانده: ${fa('${Lic.left}')}'}',
               style: const TextStyle(color: kBlue, fontWeight: FontWeight.bold)),
         ),
         Expanded(
