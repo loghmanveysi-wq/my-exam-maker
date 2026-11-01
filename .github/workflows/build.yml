@@ -47,7 +47,7 @@ jobs:
         run: |
           if [ -f assets/icon.png ]; then
             pip install pillow
-            python3 - assets/icon.png android/app/src/main/res assets/logo.png <<'PY'
+            python3 - assets/icon.png android/app/src/main/res <<'PY'
           import sys, os
           from PIL import Image, ImageChops, ImageDraw
           im = Image.open(sys.argv[1]).convert('RGB')
@@ -66,15 +66,37 @@ jobs:
               d = os.path.join(sys.argv[2], 'mipmap-' + k)
               os.makedirs(d, exist_ok=True)
               out.resize((v, v), Image.LANCZOS).save(os.path.join(d, 'ic_launcher.png'))
-          out.resize((256, 256), Image.LANCZOS).save(sys.argv[3])
           print('icons written')
           PY
-            if ! grep -q "assets/logo.png" pubspec.yaml; then
-              sed -i 's#^\([[:space:]]*\)- assets/fonts/#&\n\1- assets/logo.png#' pubspec.yaml
-            fi
           else
             echo "::warning::assets/icon.png not found, default icon used"
           fi
+
+      - name: Add Bazaar billing
+        run: |
+          flutter pub add flutter_poolakey
+          python3 - <<'PY'
+          p = 'android/build.gradle.kts'
+          s = open(p, encoding='utf-8').read()
+          if 'jitpack.io' not in s:
+              assert 'mavenCentral()' in s, 'mavenCentral not found'
+              s = s.replace('mavenCentral()', 'mavenCentral()\n        maven { url = uri("https://jitpack.io") }', 1)
+              open(p, 'w', encoding='utf-8').write(s)
+          m = 'android/app/src/main/AndroidManifest.xml'
+          t = open(m, encoding='utf-8').read()
+          if 'PAY_THROUGH_BAZAAR' not in t:
+              perm = '<uses-permission android:name="com.farsitel.bazaar.permission.PAY_THROUGH_BAZAAR" />\n    '
+              assert '<application' in t, 'application tag not found'
+              t = t.replace('<application', perm + '<application', 1)
+          pkg = '<package android:name="com.farsitel.bazaar" />'
+          if pkg not in t:
+              if '<queries>' in t:
+                  t = t.replace('<queries>', '<queries>\n        ' + pkg, 1)
+              else:
+                  t = t.replace('</manifest>', '    <queries>\n        ' + pkg + '\n    </queries>\n</manifest>', 1)
+          open(m, 'w', encoding='utf-8').write(t)
+          print('billing ready')
+          PY
 
       - name: Use release signing key
         run: |
