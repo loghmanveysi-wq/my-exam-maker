@@ -74,7 +74,19 @@ jobs:
 
       - name: Add Bazaar billing
         run: |
-          flutter pub add flutter_poolakey
+          git clone --depth 1 https://github.com/4itsam/flutter_poolakey_plus.git packages/poolakey
+          echo "plugin commit: $(git -C packages/poolakey rev-parse HEAD)"
+          NAME=$(grep -m1 '^name:' packages/poolakey/pubspec.yaml | sed 's/^name:[[:space:]]*//' | tr -d '\r ')
+          FILE=$(grep -rl "class FlutterPoolakey" packages/poolakey/lib | head -1)
+          echo "plugin package name: $NAME, file: $FILE"
+          if [ -z "$NAME" ] || [ -z "$FILE" ]; then
+            echo "plugin layout not recognized"
+            exit 1
+          fi
+          REL=${FILE#packages/poolakey/lib/}
+          flutter pub add "$NAME" --path packages/poolakey
+          sed -i "s#package:flutter_poolakey/flutter_poolakey.dart#package:$NAME/$REL#" lib/main.dart
+          grep -n "poolakey" lib/main.dart | head -3
           python3 - <<'PY'
           p = 'android/build.gradle.kts'
           s = open(p, encoding='utf-8').read()
