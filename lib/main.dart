@@ -27,6 +27,17 @@ Future<void> main() async {
   runApp(const App());
 }
 
+// نام برنامه پایین هر صفحه‌ی PDF و Word (کنار لوگو)
+const kSignature = 'آزمون بساز';
+
+Future<Uint8List?> loadLogo() async {
+  try {
+    return (await rootBundle.load('assets/logo.png')).buffer.asUint8List();
+  } catch (_) {
+    return null;
+  }
+}
+
 const kBlue = Color(0xFF1565C0);
 const kLabels = ['الف', 'ب', 'ج', 'د'];
 const kLatin = ['A', 'B', 'C', 'D'];
@@ -1447,9 +1458,33 @@ class _HomeState extends State<Home> {
       children: rows,
     );
 
+    final logoBytes = await loadLogo();
+    final logoImg = logoBytes == null ? null : pw.MemoryImage(logoBytes);
     doc.addPage(pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
       margin: const pw.EdgeInsets.all(28),
+      footer: (c) => pw.Container(
+        margin: const pw.EdgeInsets.only(top: 6),
+        padding: const pw.EdgeInsets.only(top: 3),
+        decoration: pw.BoxDecoration(
+            border: pw.Border(top: pw.BorderSide(width: 0.5))),
+        child: pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text('${c.pageNumber} / ${c.pagesCount}',
+                textDirection: pw.TextDirection.ltr,
+                style: pw.TextStyle(fontSize: 9)),
+            pw.Row(mainAxisSize: pw.MainAxisSize.min, children: [
+              if (logoImg != null) ...[
+                pw.Image(logoImg, width: 14, height: 14),
+                pw.SizedBox(width: 4),
+              ],
+              t(kSignature, size: 10, a: pw.TextAlign.center, bold: true),
+            ]),
+            pw.SizedBox(width: 30),
+          ],
+        ),
+      ),
       build: (c) => [if (useHdr) headerW, table],
     ));
     return Uint8List.fromList(await doc.save());
@@ -1622,7 +1657,8 @@ class _HomeState extends State<Home> {
     const xmlHead = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 
     final documentXml = '$xmlHead<w:document $ns><w:body>$body'
-        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+        '<w:sectPr><w:footerReference w:type="default" r:id="rIdFooter1"/>'
+        '<w:pgSz w:w="11906" w:h="16838"/>'
         '<w:pgMar w:top="567" w:right="567" w:bottom="567" w:left="567" w:header="400" w:footer="400" w:gutter="0"/>'
         '<w:bidi/></w:sectPr></w:body></w:document>';
 
@@ -1633,6 +1669,7 @@ class _HomeState extends State<Home> {
         '<Default Extension="png" ContentType="image/png"/>'
         '<Default Extension="jpeg" ContentType="image/jpeg"/>'
         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'
         '</Types>';
 
     const rootRels =
@@ -1641,7 +1678,29 @@ class _HomeState extends State<Home> {
         '</Relationships>';
 
     final docRels =
-        '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">$rels</Relationships>';
+        '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">$rels'
+        '<Relationship Id="rIdFooter1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
+        '</Relationships>';
+    final logoBytes = await loadLogo();
+    final logoRun = logoBytes == null
+        ? ''
+        : '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
+            '<wp:extent cx="203200" cy="203200"/><wp:docPr id="9999" name="Logo"/>'
+            '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+            '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic><pic:nvPicPr><pic:cNvPr id="9999" name="logo.png"/><pic:cNvPicPr/></pic:nvPicPr>'
+            '<pic:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="203200" cy="203200"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+            '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+            '<w:r><w:t xml:space="preserve">  </w:t></w:r>';
+    final footerXml =
+        '$xmlHead<w:ftr $ns><w:p><w:pPr><w:bidi/><w:jc w:val="center"/></w:pPr>'
+        '$logoRun${rp(kSignature, sz: 18, b: true)}</w:p></w:ftr>';
+    final footerRels =
+        '$xmlHead<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '${logoBytes == null ? '' : '<Relationship Id="rIdLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.png"/>'}'
+        '</Relationships>';
 
     final arc = Archive();
     void add(String n, List<int> b) => arc.addFile(ArchiveFile(n, b.length, b));
@@ -1649,6 +1708,9 @@ class _HomeState extends State<Home> {
     add('_rels/.rels', utf8.encode(rootRels));
     add('word/document.xml', utf8.encode(documentXml));
     add('word/_rels/document.xml.rels', utf8.encode(docRels));
+    add('word/footer1.xml', utf8.encode(footerXml));
+    add('word/_rels/footer1.xml.rels', utf8.encode(footerRels));
+    if (logoBytes != null) add('word/media/logo.png', logoBytes);
     media.forEach((k, v) => add('word/media/$k', v));
 
     final z = ZipEncoder().encode(arc) as List<int>;
