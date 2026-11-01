@@ -103,7 +103,8 @@ class Lic {
   static const _kPrem = 'is_premium';
   static const _kUsed = 'used_exams';
 
-  static bool get premium => prefs.getBool(_kPrem) ?? false;
+  static bool get premium =>
+      prefs.getString('session') == 'owner' || (prefs.getBool(_kPrem) ?? false);
   static Set<String> _used() => (prefs.getStringList(_kUsed) ?? []).toSet();
   static int get usedCount => _used().length;
   static int get left => math.max(0, kFreeExams - usedCount);
@@ -181,6 +182,11 @@ const kSalt = 'azmoon-besaz|';
 const kAdminEmailHash =
     '7d1d80643d8c7ef1e91ea9240b7ac321524c1231e357c08ef04d5108c13aff18';
 const kAdminPassHash =
+    '8c55c67afba77902ef01876e781c027ba8559f5ad0185346a7efd321f8c72341';
+
+const kOwnerUserHash =
+    'a3eef4c63c2730a3775b80757a7a1b62aecadba47f2a68fee5f0c63bb5628a4a';
+const kOwnerPassHash =
     '8c55c67afba77902ef01876e781c027ba8559f5ad0185346a7efd321f8c72341';
 
 String sha(String s) => sha256.convert(utf8.encode('$kSalt$s')).toString();
@@ -692,6 +698,11 @@ class _AuthScreenState extends State<AuthScreen> {
       widget.onLogin('admin');
       return;
     }
+    if (sha(em) == kOwnerUserHash &&
+        (sha(pw) == kOwnerPassHash || sha(toEn(pw)) == kOwnerPassHash)) {
+      widget.onLogin('owner');
+      return;
+    }
     final u = loadUsers().where((x) => x.email == em).toList();
     if (u.isNotEmpty && sha('${u.first.salt}|$pw') == u.first.hash) {
       widget.onLogin(em);
@@ -900,7 +911,9 @@ class ProfilePage extends StatelessWidget {
     for (final x in loadUsers()) {
       if (x.email == session) u = x;
     }
-    final name = admin ? 'مدیر سیستم' : (u?.full ?? '');
+    final name = admin
+        ? 'مدیر سیستم'
+        : (session == 'owner' ? 'Loghman' : (u?.full ?? ''));
     Widget row(IconData i, String label, String v) => Card(
           child: ListTile(
             leading: Icon(i, color: kBlue),
