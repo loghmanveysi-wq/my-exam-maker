@@ -56,8 +56,13 @@ String fa(String s) {
 }
 
 // نقطه اعشار به اسلش تبدیل می‌شود: ۲/۵
-String num2(double p) =>
-    fa(p % 1 == 0 ? p.toInt().toString() : p.toString()).replaceAll('.', '/');
+String num2(double p) {
+  final r = (p * 100).round() / 100; // حذف خطای اعشاری جمع نمرات
+  final t = r % 1 == 0
+      ? r.toInt().toString()
+      : r.toString().replaceFirst(RegExp(r'0+$'), '');
+  return fa(t).replaceAll('.', '/');
+}
 
 String toEn(String s) {
   const f = '۰۱۲۳۴۵۶۷۸۹';
@@ -1383,10 +1388,15 @@ class _HomeState extends State<Home> {
           ),
         );
 
-    pw.Widget numText(String s, {double size = 12}) => pw.Text(s,
-        textDirection: pw.TextDirection.ltr,
-        textAlign: pw.TextAlign.center,
-        style: pw.TextStyle(fontSize: s.length > 4 ? size - 2 : size));
+    // اعداد ردیف/بارم با رقم لاتین چاپ می‌شوند (فونت همان شکل فارسی را نشان می‌دهد)
+    // چون رقم فارسی در متن LTR پکیج pdf گاهی اشتباه (مثلاً ۱ و ۲ به شکل ۳) رسم می‌شود
+    pw.Widget numText(String s, {double size = 12, bool bold = false}) =>
+        pw.Text(toEn(s).replaceAll('.', '/'),
+            textDirection: pw.TextDirection.ltr,
+            textAlign: pw.TextAlign.center,
+            style: pw.TextStyle(
+                fontSize: s.length > 4 ? size - 2 : size,
+                fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal));
 
     final side = pw.BorderSide(width: 0.8);
 
@@ -1569,8 +1579,8 @@ class _HomeState extends State<Home> {
 
       rows.add(pw.TableRow(children: [
         pw.Container(
-          alignment: pw.Alignment.topCenter,
-          padding: const pw.EdgeInsets.all(3),
+          alignment: pw.Alignment.center,
+          padding: const pw.EdgeInsets.all(2),
           child: numText(num2(q.points)),
         ),
         pw.Padding(
@@ -1591,6 +1601,22 @@ class _HomeState extends State<Home> {
       ]));
       if (hasImg) {}
     }
+
+    // ردیف پایانی: «موفق باشید» + جمع بارم
+    rows.add(pw.TableRow(children: [
+      pw.Container(
+        height: 30,
+        alignment: pw.Alignment.center,
+        padding: const pw.EdgeInsets.all(2),
+        child: numText(num2(total), bold: true),
+      ),
+      pw.Container(
+        height: 30,
+        alignment: pw.Alignment.center,
+        child: t('موفق باشید', size: 13, a: pw.TextAlign.center, bold: true),
+      ),
+      pw.Container(height: 30),
+    ]));
 
     final table = pw.Table(
       border: pw.TableBorder.all(width: 1),
@@ -1787,10 +1813,22 @@ class _HomeState extends State<Home> {
                 va: 'center') +
             tcX(c.toString(), 9620) +
             tcX(pp(rp(num2(q.points), sz: 22, rtl: false), center: true, rtl: false),
-                520),
+                520,
+                va: 'center'),
         h: 600,
       ));
     }
+    // ردیف پایانی: «موفق باشید» + جمع بارم
+    body.write(trX(
+      tcX('<w:p/>', 560, va: 'center') +
+          tcX(pp(rp('موفق باشید', sz: 24, b: true), center: true), 9620,
+              va: 'center') +
+          tcX(pp(rp(num2(total), sz: 22, b: true, rtl: false),
+                  center: true, rtl: false),
+              520,
+              va: 'center'),
+      h: 560,
+    ));
     body.write('</w:tbl><w:p/>');
 
     const ns =
