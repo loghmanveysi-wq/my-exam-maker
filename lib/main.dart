@@ -94,7 +94,7 @@ bool isRtl(String s) {
 // ---------------- محدودیت رایگان و خرید از کافه‌بازار ----------------
 const kFreeExams = 3;
 // حالت تست: true = محدودیت ۳ ساخت رایگان برداشته می‌شود. قبل از انتشار false کنید.
-const kTestMode = true;
+const kTestMode = false;
 const kProductId = 'premium_full';
 const kBazaarKey =
     'MIHNMA0GCSqGSIb3DQEBAQUAA4G7ADCBtwKBrwC20MJaoLt95AGylGqEsm4zPphkWjbOAV3+M7Dft1cXEgrcIOz/awkVP3archjfG+ub9plvQLfstgLqttR3Zw5bP/e2ibmM8mFxrE+jWsm/sCJ6Gs1lyZ/S8BuYdzPoZRUfpNas1Avsn0FTGBmVLR3fSG3uWbxPLjMUeIencsOs67Jsgsv2Ew4mZMz4X9+/1CrTtNVZyIZsIW/UuyCPv8OC4S/cJA6FmCQavTC/tn0CAwEAAQ==';
@@ -109,13 +109,13 @@ class Lic {
   static int get usedCount => _used().length;
   static int get left => math.max(0, kFreeExams - usedCount);
 
-  // آزمونی که قبلاً شمرده شده (همان محتوا) دوباره شمرده نمی‌شود
+  // هر خروجی (PDF یا Word) یک ساخت حساب می‌شود، حتی اگر آزمون تکراری باشد
   static bool canExport(String id) =>
-      kTestMode || premium || _used().contains(id) || usedCount < kFreeExams;
+      kTestMode || premium || usedCount < kFreeExams;
 
   static Future<void> register(String id) async {
     if (premium) return;
-    final u = _used()..add(id);
+    final u = _used()..add('$id|${DateTime.now().microsecondsSinceEpoch}');
     await prefs.setStringList(_kUsed, u.toList());
   }
 
