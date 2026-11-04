@@ -121,8 +121,9 @@ class Lic {
 
   static Future<bool> _connect() async {
     final c = Completer<bool>();
+    // فراخوانی connect را await نمی‌کنیم تا اگر کافه‌بازار پاسخ نداد، برنامه گیر نکند
     try {
-      await FlutterPoolakey.connect(
+      FlutterPoolakey.connect(
         kBazaarKey,
         onSucceed: () {
           if (!c.isCompleted) c.complete(true);
@@ -131,11 +132,13 @@ class Lic {
           if (!c.isCompleted) c.complete(false);
         },
         onDisconnected: () {},
-      );
+      ).then<void>((_) {}, onError: (Object _) {
+        if (!c.isCompleted) c.complete(false);
+      });
     } catch (_) {
       return false;
     }
-    return c.future.timeout(const Duration(seconds: 10), onTimeout: () => false);
+    return c.future.timeout(const Duration(seconds: 12), onTimeout: () => false);
   }
 
   static Future<void> _disconnect() async {
@@ -147,7 +150,7 @@ class Lic {
   // null یعنی خرید موفق بود؛ در غیر این صورت متن خطا
   static Future<String?> buy() async {
     if (!await _connect()) {
-      return 'اتصال به کافه‌بازار برقرار نشد. مطمئن شوید کافه‌بازار نصب و به‌روز است و وارد حساب خود شده‌اید.';
+      return 'اتصال به کافه‌بازار برقرار نشد. کافه‌بازار باید نصب، به‌روز و با حساب شما وارد شده باشد و برنامه با همان نام بسته و امضای نسخه‌ی آپلودشده در پیشخان نصب شده باشد.';
     }
     try {
       await FlutterPoolakey.purchase(kProductId);
