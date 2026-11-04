@@ -415,6 +415,35 @@ Widget fxLineWidget(String src,
       textDirection: rtl ? TextDirection.rtl : TextDirection.ltr, child: child);
 }
 
+// ---------------- قالب‌بندی متن سؤال ----------------
+// بولد: **متن**    اندازه‌ی فونت: [۱۶] در ابتدای خط (عدد به پوینت)
+final _szRe = RegExp(r'^\s*\[(\d{1,2})\]\s?');
+
+double? lineSize(String l) {
+  final m = _szRe.firstMatch(l);
+  if (m == null) return null;
+  final v = double.tryParse(m.group(1)!);
+  return v == null ? null : v.clamp(8.0, 40.0).toDouble();
+}
+
+String stripSize(String l) => l.replaceFirst(_szRe, '');
+
+// جداسازی خط به بخش‌های (متن، بولد؟)
+List<(String, bool)> boldSpans(String l) {
+  final parts = l.split('**');
+  final out = <(String, bool)>[];
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i].isEmpty) continue;
+    out.add((parts[i], i.isOdd));
+  }
+  return out;
+}
+
+// متن ساده‌ی خط بدون علامت‌های قالب‌بندی
+String stripFmt(String l) => stripSize(l).replaceAll('**', '');
+
+String plainText(String t) => t.split('\n').map(stripFmt).join('\n');
+
 // ---------------- مدل سؤال ----------------
 class Q {
   String type; // mc, tf, desc
@@ -455,7 +484,7 @@ class Q {
         'imgManual': imgManual,
       };
   factory Q.fromJson(Map<String, dynamic> j) => Q(
-        type: j['type'],
+        type: j['type'] == 'tf' ? 'desc' : j['type'],
         text: j['text'] ?? '',
         formula: j['formula'] ?? '',
         options: List<String>.from(j['options']),
@@ -571,7 +600,7 @@ String trX(String cells, {int h = 0}) =>
     '<w:tr>${h > 0 ? '<w:trPr><w:cantSplit/><w:trHeight w:val="$h" w:hRule="atLeast"/></w:trPr>' : ''}$cells</w:tr>';
 
 String tblPr(int inner) =>
-    '<w:tblPr><w:bidiVisual/><w:tblW w:w="10700" w:type="dxa"/><w:tblBorders>'
+    '<w:tblPr><w:bidiVisual/><w:tblW w:w="11340" w:type="dxa"/><w:tblBorders>'
     '<w:top w:val="single" w:sz="18" w:space="0" w:color="000000"/>'
     '<w:left w:val="single" w:sz="18" w:space="0" w:color="000000"/>'
     '<w:bottom w:val="single" w:sz="18" w:space="0" w:color="000000"/>'
@@ -1227,8 +1256,9 @@ class _HomeState extends State<Home> {
       final ls = <int, Fx>{};
       final tl = q.text.split('\n');
       for (var k = 0; k < tl.length; k++) {
-        if (!hasMathMark(tl[k])) continue;
-        final f = await renderFx(tl[k].trim(), textMode: true);
+        final fl0 = stripFmt(tl[k]);
+        if (!hasMathMark(fl0)) continue;
+        final f = await renderFx(fl0.trim(), textMode: true);
         if (f != null) ls[k] = f;
       }
       out.add(QFx(fl, ls));
@@ -1401,6 +1431,50 @@ class _HomeState extends State<Home> {
       );
     }
 
+    // خط سؤال با بولد و اندازه‌ی دلخواه
+    pw.Widget qrich(String raw, {double size = 13}) {
+      final sz = lineSize(raw) ?? size;
+      final spans = boldSpans(stripSize(raw));
+      final plain = spans.map((e) => e.$1).join();
+      final rtl = isRtl(plain);
+      final hasBold = spans.any((e) => e.$2);
+      if (!hasBold) {
+        return pw.Align(
+          alignment: rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
+          child: pw.Text(plain,
+              textDirection: rtl ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+              textAlign: rtl ? pw.TextAlign.right : pw.TextAlign.left,
+              style: pw.TextStyle(fontSize: sz)),
+        );
+      }
+      if (spans.every((e) => e.$2)) {
+        return pw.Align(
+          alignment: rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
+          child: pw.Text(plain,
+              textDirection: rtl ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+              textAlign: rtl ? pw.TextAlign.right : pw.TextAlign.left,
+              style: pw.TextStyle(
+                  fontSize: sz, fontWeight: pw.FontWeight.bold)),
+        );
+      }
+      return pw.Align(
+        alignment: rtl ? pw.Alignment.centerRight : pw.Alignment.centerLeft,
+        child: pw.RichText(
+          textDirection: rtl ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+          textAlign: rtl ? pw.TextAlign.right : pw.TextAlign.left,
+          text: pw.TextSpan(children: [
+            for (final sp in spans)
+              pw.TextSpan(
+                  text: sp.$1,
+                  style: pw.TextStyle(
+                      fontSize: sz,
+                      fontWeight:
+                          sp.$2 ? pw.FontWeight.bold : pw.FontWeight.normal)),
+          ]),
+        ),
+      );
+    }
+
     pw.Widget fit(String s,
             {double size = 12,
             bool b = false,
@@ -1503,9 +1577,15 @@ class _HomeState extends State<Home> {
       final lab = rtlQ ? kLabels : kLatin;
 
       final qLines = q.text.split('\n');
+      var firstL = qLines.indexWhere((e) => e.trim().isNotEmpty);
+      var lastL = qLines.lastIndexWhere((e) => e.trim().isNotEmpty);
       for (var li = 0; li < qLines.length; li++) {
         final l = qLines[li];
-        if (l.trim().isEmpty) continue;
+        if (l.trim().isEmpty) {
+          // خط خالی بین دو بخش سؤال → فاصله‌ی واقعی در خروجی
+          if (li > firstL && li < lastL) content.add(pw.SizedBox(height: 15));
+          continue;
+        }
         final fx = fxs[i].lines[li];
         if (fx != null) {
           content.add(pw.SizedBox(height: 2));
@@ -1519,7 +1599,7 @@ class _HomeState extends State<Home> {
           ));
           content.add(pw.SizedBox(height: 2));
         } else {
-          content.add(qline(l, size: 13));
+          content.add(qrich(l, size: 13));
         }
       }
       for (final f in fxs[i].formulas) {
@@ -1547,7 +1627,7 @@ class _HomeState extends State<Home> {
           pw.Alignment al;
           if (imgOnly) {
             // تصویر به جای صورت سؤال: تمام عرض سلول، چسبیده به راست
-            w = 462;
+            w = 489;
             h = w * sz.height / sz.width;
             if (h > 640) {
               h = 640;
@@ -1660,7 +1740,8 @@ class _HomeState extends State<Home> {
     final logoImg = logoBytes == null ? null : pw.MemoryImage(logoBytes);
     doc.addPage(pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
-      margin: const pw.EdgeInsets.all(28),
+      // حاشیه‌ی نیم‌سانتی‌متر از راست، چپ و بالا (۰٫۵ سانتی‌متر ≈ ۱۴٫۲ پوینت)
+      margin: const pw.EdgeInsets.fromLTRB(14.2, 14.2, 14.2, 28),
       footer: (c) => pw.Container(
         margin: const pw.EdgeInsets.only(top: 6),
         padding: const pw.EdgeInsets.only(top: 3),
@@ -1729,16 +1810,16 @@ class _HomeState extends State<Home> {
       final right = hdr.rightRows;
       final left = hdr.leftRows;
       body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
-          '<w:gridCol w:w="3300"/><w:gridCol w:w="4100"/><w:gridCol w:w="3300"/></w:tblGrid>');
+          '<w:gridCol w:w="3500"/><w:gridCol w:w="4340"/><w:gridCol w:w="3500"/></w:tblGrid>');
       for (var i = 0; i < 5; i++) {
         final midCell = i == 0
-            ? tcX(midParas, 4100, vm: '<w:vMerge w:val="restart"/>', va: 'center')
-            : tcX('<w:p/>', 4100, vm: '<w:vMerge/>');
+            ? tcX(midParas, 4340, vm: '<w:vMerge w:val="restart"/>', va: 'center')
+            : tcX('<w:p/>', 4340, vm: '<w:vMerge/>');
         body.write(trX(
-          tcX(pp(rp(right[i], sz: fitSz(right[i], 20, 26), b: true)), 3300,
+          tcX(pp(rp(right[i], sz: fitSz(right[i], 20, 26), b: true)), 3500,
                   va: 'center') +
               midCell +
-              tcX(pp(rp(left[i], sz: fitSz(left[i], 20, 26), b: true)), 3300,
+              tcX(pp(rp(left[i], sz: fitSz(left[i], 20, 26), b: true)), 3500,
                   va: 'center'),
           h: 420,
         ));
@@ -1749,11 +1830,11 @@ class _HomeState extends State<Home> {
     }
 
     body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
-        '<w:gridCol w:w="560"/><w:gridCol w:w="9620"/><w:gridCol w:w="520"/></w:tblGrid>');
+        '<w:gridCol w:w="560"/><w:gridCol w:w="10260"/><w:gridCol w:w="520"/></w:tblGrid>');
     body.write(trX(
         tcX(pp(rp('ردیف', sz: 14, b: true), center: true), 560,
                 td: true, va: 'center') +
-            tcX(pp(rp('متن سوالات', sz: 20, b: true), center: true), 9620,
+            tcX(pp(rp('متن سوالات', sz: 20, b: true), center: true), 10260,
                 va: 'center') +
             tcX(pp(rp('بارم', sz: 14, b: true), center: true), 520,
                 td: true, va: 'center'),
@@ -1766,16 +1847,29 @@ class _HomeState extends State<Home> {
       final lab = rtlQ ? kLabels : kLatin;
 
       final qLines = q.text.split('\n');
+      final firstL = qLines.indexWhere((e) => e.trim().isNotEmpty);
+      final lastL = qLines.lastIndexWhere((e) => e.trim().isNotEmpty);
       for (var li = 0; li < qLines.length; li++) {
         final l = qLines[li];
-        if (l.trim().isEmpty) continue;
+        if (l.trim().isEmpty) {
+          // خط خالی بین دو بخش سؤال → فاصله‌ی واقعی در خروجی
+          if (li > firstL && li < lastL) {
+            c.write(
+                '<w:p><w:pPr><w:bidi/><w:spacing w:before="40" w:after="40"/><w:rPr><w:sz w:val="24"/></w:rPr></w:pPr></w:p>');
+          }
+          continue;
+        }
         final fx = fxs[i].lines[li];
         if (fx != null) {
           c.write(addPic(fx.bytes, (fx.w * kFxScale * 12700).round(),
               (fx.h * kFxScale * 12700).round(), fx.rtl ? 'right' : 'left'));
         } else {
-          final r = isRtl(l);
-          c.write(pp(rp(l, sz: 24, rtl: r), rtl: r));
+          final spans = boldSpans(stripSize(l));
+          final r = isRtl(spans.map((e) => e.$1).join());
+          final wsz = ((lineSize(l) ?? 12) * 2).round();
+          c.write(pp(
+              spans.map((e) => rp(e.$1, sz: wsz, b: e.$2, rtl: r)).join(),
+              rtl: r));
         }
       }
       for (final f in fxs[i].formulas) {
@@ -1791,7 +1885,7 @@ class _HomeState extends State<Home> {
           String jc;
           if (imgOnly) {
             // تصویر به جای صورت سؤال: تمام عرض سلول، چسبیده به راست
-            cx = 9000 * 635.0;
+            cx = 9600 * 635.0;
             cy = cx * sz.height / sz.width;
             const maxH = 7920000.0; // حدود ۲۲ سانتی‌متر
             if (cy > maxH) {
@@ -1838,7 +1932,7 @@ class _HomeState extends State<Home> {
         tcX(pp(rp(fa('${i + 1}'), sz: 22, rtl: false), center: true, rtl: false),
                 560,
                 va: 'center') +
-            tcX(c.toString(), 9620) +
+            tcX(c.toString(), 10260) +
             tcX(pp(rp(num2(q.points), sz: 22, rtl: false), center: true, rtl: false),
                 520,
                 va: 'center'),
@@ -1848,7 +1942,7 @@ class _HomeState extends State<Home> {
     // ردیف پایانی: «موفق باشید» + جمع بارم
     body.write(trX(
       tcX('<w:p/>', 560, va: 'center') +
-          tcX(pp(rp('موفق باشید', sz: 24, b: true), center: true), 9620,
+          tcX(pp(rp('موفق باشید', sz: 24, b: true), center: true), 10260,
               va: 'center') +
           tcX(pp(rp(num2(total), sz: 22, b: true, rtl: false),
                   center: true, rtl: false),
@@ -1869,7 +1963,7 @@ class _HomeState extends State<Home> {
     final documentXml = '$xmlHead<w:document $ns><w:body>$body'
         '<w:sectPr><w:footerReference w:type="default" r:id="rIdFooter1"/>'
         '<w:pgSz w:w="11906" w:h="16838"/>'
-        '<w:pgMar w:top="567" w:right="567" w:bottom="567" w:left="567" w:header="400" w:footer="400" w:gutter="0"/>'
+        '<w:pgMar w:top="283" w:right="283" w:bottom="567" w:left="283" w:header="400" w:footer="400" w:gutter="0"/>'
         '<w:bidi/></w:sectPr></w:body></w:document>';
 
     const contentTypes =
@@ -2022,7 +2116,7 @@ class _HomeState extends State<Home> {
                         title: Text(
                             q.text.isEmpty
                                 ? (q.formula.isNotEmpty ? 'سؤال فرمولی' : 'سؤال تصویری')
-                                : q.text,
+                                : plainText(q.text),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis),
                         subtitle: Text(
@@ -2164,6 +2258,59 @@ class _EditorState extends State<Editor> {
     }
   }
 
+  // ---- قالب‌بندی متن سؤال: بولد و اندازه‌ی فونت ----
+  (int, int) _lineBounds(String t, int a, int b) {
+    final ls = a <= 0 ? 0 : t.lastIndexOf('\n', a - 1) + 1;
+    var le = t.indexOf('\n', b);
+    if (le < 0) le = t.length;
+    return (ls, le);
+  }
+
+  void toggleBold() {
+    final t = text.text;
+    var sel = text.selection;
+    if (!sel.isValid) sel = TextSelection.collapsed(offset: t.length);
+    var a = sel.start, b = sel.end;
+    if (a == b) {
+      final lb = _lineBounds(t, a, b);
+      a = lb.$1;
+      b = lb.$2;
+      final m = _szRe.firstMatch(t.substring(a, b));
+      if (m != null) a += m.end;
+    }
+    if (a >= b) return;
+    final seg = t.substring(a, b);
+    String ns;
+    if (seg.length >= 4 && seg.startsWith('**') && seg.endsWith('**')) {
+      ns = seg.substring(2, seg.length - 2);
+    } else {
+      ns = '**$seg**';
+    }
+    text.value = TextEditingValue(
+      text: t.replaceRange(a, b, ns),
+      selection: TextSelection(baseOffset: a, extentOffset: a + ns.length),
+    );
+    setState(() {});
+  }
+
+  void setSize(int? n) {
+    final t = text.text;
+    var sel = text.selection;
+    if (!sel.isValid) sel = TextSelection.collapsed(offset: t.length);
+    final lb = _lineBounds(t, sel.start, sel.end);
+    final block = t.substring(lb.$1, lb.$2).split('\n');
+    final out = block.map((l) {
+      final body = stripSize(l);
+      if (n == null || body.trim().isEmpty) return body;
+      return '[$n] $body';
+    }).join('\n');
+    text.value = TextEditingValue(
+      text: t.replaceRange(lb.$1, lb.$2, out),
+      selection: TextSelection.collapsed(offset: lb.$1 + out.length),
+    );
+    setState(() {});
+  }
+
   void ins(String s, int back) {
     final v = formula.value;
     final sel = v.selection;
@@ -2264,16 +2411,42 @@ class _EditorState extends State<Editor> {
         SegmentedButton<String>(
           segments: const [
             ButtonSegment(value: 'desc', label: Text('تشریحی')),
-            ButtonSegment(value: 'tf', label: Text('صحیح/غلط')),
             ButtonSegment(value: 'mc', label: Text('چهارگزینه‌ای')),
           ],
           selected: {type},
           onSelectionChanged: (s) => setState(() => type = s.first),
         ),
         const SizedBox(height: 16),
+        Row(children: [
+          FilledButton.tonalIcon(
+            onPressed: toggleBold,
+            icon: const Icon(Icons.format_bold),
+            label: const Text('بولد'),
+          ),
+          const SizedBox(width: 8),
+          PopupMenuButton<int>(
+            tooltip: 'اندازه‌ی فونت',
+            onSelected: (v) => setSize(v == 0 ? null : v),
+            itemBuilder: (c) => [
+              const PopupMenuItem(value: 0, child: Text('اندازه‌ی پیش‌فرض')),
+              for (final n in [10, 11, 12, 13, 14, 16, 18, 20, 24])
+                PopupMenuItem(value: n, child: Text('اندازه ${fa('$n')}')),
+            ],
+            child: Chip(
+              avatar: const Icon(Icons.format_size, size: 18),
+              label: const Text('اندازه‌ی فونت'),
+            ),
+          ),
+        ]),
+        const Padding(
+          padding: EdgeInsets.only(top: 4, bottom: 8),
+          child: Text(
+              'بولد: متن را انتخاب کنید و «بولد» بزنید (بدون انتخاب، کل خط بولد می‌شود). اندازه برای خطی که مکان‌نما در آن است اعمال می‌شود. برای فاصله بین دو بخش، یک خط خالی بگذارید.',
+              style: TextStyle(fontSize: 11, color: Colors.black54)),
+        ),
         field(text, 'متن سؤال (اگر صورت سؤال در تصویر است، خالی بگذارید)',
             lines: 2, onChanged: (_) => setState(() {})),
-        if (hasMathMark(text.text))
+        if (hasMathMark(plainText(text.text)))
           Container(
             width: double.infinity,
             margin: const EdgeInsets.only(bottom: 12),
@@ -2288,7 +2461,7 @@ class _EditorState extends State<Editor> {
                 const Text('پیش‌نمایش سؤال با فرمول‌ها',
                     style: TextStyle(fontSize: 11, color: Colors.black54)),
                 const SizedBox(height: 6),
-                for (final l in text.text.split('\n'))
+                for (final l in plainText(text.text).split('\n'))
                   if (l.trim().isNotEmpty)
                     Align(
                       alignment: lineRtl(l)
