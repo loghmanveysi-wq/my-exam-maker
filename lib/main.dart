@@ -147,14 +147,22 @@ class Lic {
   // null یعنی خرید موفق بود؛ در غیر این صورت متن خطا
   static Future<String?> buy() async {
     if (!await _connect()) {
-      return 'اتصال به کافه‌بازار برقرار نشد. مطمئن شوید کافه‌بازار نصب است و وارد حساب خود شده‌اید.';
+      return 'اتصال به کافه‌بازار برقرار نشد. مطمئن شوید کافه‌بازار نصب و به‌روز است و وارد حساب خود شده‌اید.';
     }
     try {
       await FlutterPoolakey.purchase(kProductId);
       await prefs.setBool(_kPrem, true);
       return null;
-    } catch (_) {
-      return 'خرید انجام نشد.';
+    } catch (e) {
+      // اگر قبلاً خریده شده باشد، خرید دوباره خطا می‌دهد؛ مالکیت را بررسی می‌کنیم
+      try {
+        final p = await FlutterPoolakey.queryPurchasedProduct(kProductId);
+        if (p != null) {
+          await prefs.setBool(_kPrem, true);
+          return null;
+        }
+      } catch (_) {}
+      return 'خرید کامل نشد (لغو شد یا محصول «$kProductId» در کافه‌بازار فعال نیست).';
     } finally {
       await _disconnect();
     }
@@ -1276,8 +1284,9 @@ class _HomeState extends State<Home> {
       jsonEncode(hdr.toJson()) +
       useHdr.toString());
 
-  Future<void> showPaywall() async {
-    await showDialog<void>(
+  // true یعنی کاربر نسخه‌ی کامل را فعال کرد و می‌تواند ادامه دهد
+  Future<bool> showPaywall() async {
+    final act = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('پایان آزمون‌های رایگان'),
@@ -1287,38 +1296,39 @@ class _HomeState extends State<Home> {
           TextButton(
               onPressed: () => Navigator.pop(c), child: const Text('بعداً')),
           TextButton(
-            onPressed: () async {
-              Navigator.pop(c);
-              msg('در حال بررسی خرید...');
-              final ok = await Lic.restore();
-              if (!mounted) return;
-              setState(() {});
-              msg(ok
-                  ? 'خرید شما بازیابی شد'
-                  : 'خریدی برای این حساب کافه‌بازار پیدا نشد');
-            },
+            onPressed: () => Navigator.pop(c, 'restore'),
             child: const Text('بازیابی خرید'),
           ),
           FilledButton(
-            onPressed: () async {
-              Navigator.pop(c);
-              final err = await Lic.buy();
-              if (!mounted) return;
-              setState(() {});
-              msg(err ?? 'خرید موفق بود. نسخه‌ی کامل فعال شد.');
-            },
+            onPressed: () => Navigator.pop(c, 'buy'),
             child: const Text('خرید نسخه‌ی کامل'),
           ),
         ],
       ),
     );
+    if (act == null || !mounted) return false;
+    if (act == 'restore') {
+      msg('در حال بررسی خرید...');
+      final ok = await Lic.restore();
+      if (!mounted) return false;
+      setState(() {});
+      msg(ok
+          ? 'خرید شما بازیابی شد'
+          : 'خریدی برای این حساب کافه‌بازار پیدا نشد');
+      return ok;
+    }
+    msg('در حال اتصال به کافه‌بازار...');
+    final err = await Lic.buy();
+    if (!mounted) return false;
+    setState(() {});
+    msg(err ?? 'خرید موفق بود. نسخه‌ی کامل فعال شد.');
+    return err == null;
   }
 
   Future<void> exportPdf() async {
     final id = examId();
     if (qs.isNotEmpty && !Lic.canExport(id)) {
-      await showPaywall();
-      return;
+      if (!await showPaywall()) return;
     }
     final b = await buildPdf();
     if (b != null) {
@@ -1331,8 +1341,7 @@ class _HomeState extends State<Home> {
   Future<void> exportDocx() async {
     final id = examId();
     if (qs.isNotEmpty && !Lic.canExport(id)) {
-      await showPaywall();
-      return;
+      if (!await showPaywall()) return;
     }
     final b = await buildDocx();
     if (b != null) {
