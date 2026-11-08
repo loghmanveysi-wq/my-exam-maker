@@ -1178,6 +1178,58 @@ class _HomeState extends State<Home> {
     return s.isEmpty ? 'azmoon' : s;
   }
 
+  // جابجایی سؤال (d = -1 بالا، +1 پایین)
+  void moveQ(int i, int d) {
+    final j = i + d;
+    if (j < 0 || j >= qs.length) return;
+    setState(() {
+      final x = qs.removeAt(i);
+      qs.insert(j, x);
+    });
+    save();
+  }
+
+  // منوی نگه‌داشتن روی سؤال
+  Future<void> qMenu(int i) async {
+    final act = await showModalBottomSheet<String>(
+      context: context,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.arrow_upward, color: kBlue),
+            title: const Text('انتقال به بالا'),
+            enabled: i > 0,
+            onTap: () => Navigator.pop(c, 'up'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.arrow_downward, color: kBlue),
+            title: const Text('انتقال به پایین'),
+            enabled: i < qs.length - 1,
+            onTap: () => Navigator.pop(c, 'down'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.edit, color: kBlue),
+            title: const Text('ویرایش سؤال'),
+            onTap: () => Navigator.pop(c, 'edit'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.redAccent),
+            title: const Text('حذف سؤال'),
+            onTap: () => Navigator.pop(c, 'del'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted || act == null) return;
+    if (act == 'up') moveQ(i, -1);
+    if (act == 'down') moveQ(i, 1);
+    if (act == 'edit') edit(i);
+    if (act == 'del') {
+      setState(() => qs.removeAt(i));
+      save();
+    }
+  }
+
   Future<void> edit([int? i]) async {
     final r = await Navigator.push<Q>(context,
         MaterialPageRoute(builder: (_) => Editor(q: i == null ? null : qs[i])));
@@ -2126,48 +2178,87 @@ class _HomeState extends State<Home> {
             ),
           ]),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Text(
-              'تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}${Lic.premium ? '' : '   |   آزمون رایگان باقی‌مانده: ${fa('${Lic.left}')}'}',
-              style: const TextStyle(color: kBlue, fontWeight: FontWeight.bold)),
-        ),
+        // کادر سؤال‌ها: لیست سؤال‌ها + در انتها تعداد سؤال و جمع بارم
         Expanded(
-          child: qs.isEmpty
-              ? const Center(child: Text('هنوز سؤالی ندارید'))
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 90),
-                  itemCount: qs.length,
-                  itemBuilder: (c, i) {
-                    final q = qs[i];
-                    return Card(
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16)),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                            backgroundColor: kBlue,
-                            foregroundColor: Colors.white,
-                            child: Text(fa('${i + 1}'))),
-                        title: Text(
-                            q.text.isEmpty
-                                ? (q.formula.isNotEmpty ? 'سؤال فرمولی' : 'سؤال تصویری')
-                                : plainText(q.text),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis),
-                        subtitle: Text(
-                            '${typeName(q.type)} - ${num2(q.points)} نمره${q.image != null ? ' - دارای تصویر' : ''}${q.formula.isNotEmpty ? ' - دارای فرمول' : ''}'),
-                        onTap: () => edit(i),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.redAccent),
-                          onPressed: () {
-                            setState(() => qs.removeAt(i));
-                            save();
-                          },
-                        ),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 8, 12, 84),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.55),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: kBlue.withOpacity(0.35), width: 1.5),
+            ),
+            child: Column(children: [
+              Expanded(
+                child: qs.isEmpty
+                    ? const Center(child: Text('هنوز سؤالی ندارید'))
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+                        itemCount: qs.length,
+                        itemBuilder: (c, i) {
+                          final q = qs[i];
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16)),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                  backgroundColor: kBlue,
+                                  foregroundColor: Colors.white,
+                                  child: Text(fa('${i + 1}'))),
+                              title: Text(
+                                  q.text.isEmpty
+                                      ? (q.formula.isNotEmpty
+                                          ? 'سؤال فرمولی'
+                                          : 'سؤال تصویری')
+                                      : plainText(q.text),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis),
+                              subtitle: Text(
+                                  '${typeName(q.type)} - ${num2(q.points)} نمره${q.image != null ? ' - دارای تصویر' : ''}${q.formula.isNotEmpty ? ' - دارای فرمول' : ''}'),
+                              onTap: () => edit(i),
+                              onLongPress: () => qMenu(i),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'ویرایش سؤال',
+                                    icon: const Icon(Icons.edit, color: kBlue),
+                                    onPressed: () => edit(i),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'حذف سؤال',
+                                    icon: const Icon(Icons.delete,
+                                        color: Colors.redAccent),
+                                    onPressed: () {
+                                      setState(() => qs.removeAt(i));
+                                      save();
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
+              ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: kBlue.withOpacity(0.08),
+                  border: Border(
+                      top: BorderSide(color: kBlue.withOpacity(0.35))),
+                  borderRadius: const BorderRadius.vertical(
+                      bottom: Radius.circular(17)),
                 ),
+                child: Text(
+                    'تعداد سؤال: ${fa('${qs.length}')}   |   جمع بارم: ${num2(total)}${Lic.premium ? '' : '   |   آزمون رایگان باقی‌مانده: ${fa('${Lic.left}')}'}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: kBlue, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+          ),
         ),
       ]),
     );
