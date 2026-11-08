@@ -92,7 +92,7 @@ bool isRtl(String s) {
 }
 
 // ---------------- محدودیت رایگان و خرید از کافه‌بازار ----------------
-const kFreeExams = 3;
+const kFreeExams = 5;
 // حالت تست: true = محدودیت ۳ ساخت رایگان برداشته می‌شود. قبل از انتشار false کنید.
 const kTestMode = false;
 const kProductId = 'premium_full';
@@ -2024,11 +2024,7 @@ class _HomeState extends State<Home> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: bar('آزمون بساز', actions: [
-        actBtn(Icons.description, 'ورد', exportDocx),
-        actBtn(Icons.picture_as_pdf, 'پی‌دی‌اف', exportPdf),
-        const SizedBox(width: 8),
-      ]),
+      appBar: bar('آزمون بساز'),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: kBlue,
         foregroundColor: Colors.white,
@@ -2037,6 +2033,45 @@ class _HomeState extends State<Home> {
         label: const Text('افزودن سؤال'),
       ),
       body: Column(children: [
+        // دکمه‌های خروجی
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Row(children: [
+            Expanded(
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFD32F2F),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                onPressed: exportPdf,
+                icon: const Icon(Icons.picture_as_pdf),
+                label: const Text('خروجی PDF',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF1565C0),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                onPressed: exportDocx,
+                icon: const Icon(Icons.description),
+                label: const Text('خروجی Word',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ]),
+        ),
         // انتخاب سربرگ + کلید روشن/خاموش
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
