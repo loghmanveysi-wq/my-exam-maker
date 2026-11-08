@@ -141,7 +141,14 @@ jobs:
 
       - run: flutter pub get
 
-      - run: flutter build apk --release --build-number=${{ github.run_number }}
+      - name: Build APK (retry on network errors)
+        run: |
+          for i in 1 2 3; do
+            flutter build apk --release --build-number=${{ github.run_number }} && exit 0
+            echo "Build failed (attempt $i), retrying in 20s..."
+            sleep 20
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
