@@ -143,10 +143,10 @@ jobs:
 
       - name: Build APK (retry on network errors)
         run: |
-          for i in 1 2 3; do
+          for i in 1 2 3 4 5 6; do
             flutter build apk --release --build-number=${{ github.run_number }} && exit 0
-            echo "Build failed (attempt $i), retrying in 20s..."
-            sleep 20
+            echo "Build failed (attempt $i), retrying in 90s..."
+            sleep 90
           done
           exit 1
 
