@@ -370,7 +370,11 @@ Widget fxLineWidget(String src,
   void word(String w) => kids.add(Text(w,
       textDirection: isRtl(w) ? TextDirection.rtl : TextDirection.ltr,
       style: TextStyle(
-          fontSize: fs, color: Colors.black, fontFamily: kFxFont, height: 1.2)));
+          fontSize: fs,
+          color: Colors.black,
+          fontFamily: kFxFont,
+          height: 1.2,
+          decoration: TextDecoration.none)));
 
   void words(String t) {
     for (final w in t.split(RegExp(r'[ \u00a0\t]+'))) {
@@ -516,7 +520,11 @@ const hdrLabels = {
   'pages': 'تعداد صفحه',
 };
 
+const hdrExtraKeys = ['htype', 'logo', 'logoSize'];
+
 const hdrDefaults = {
+  'htype': 'full',
+  'logoSize': '60',
   'bism': 'بسمه تعالی',
   'ministry': 'وزارت آموزش و پرورش',
   'province': 'اداره کل آموزش و پرورش استان ......',
@@ -528,13 +536,14 @@ class Hdr {
   final Map<String, String> m;
   Hdr([Map<String, String>? v])
       : m = {
-          for (final k in hdrLabels.keys) k: v?[k] ?? hdrDefaults[k] ?? ''
+          for (final k in [...hdrLabels.keys, ...hdrExtraKeys])
+            k: v?[k] ?? hdrDefaults[k] ?? ''
         };
   String operator [](String k) => m[k] ?? '';
   Map<String, dynamic> toJson() => m;
   factory Hdr.fromJson(Map<String, dynamic> j) {
     final v = <String, String>{};
-    for (final k in hdrLabels.keys) {
+    for (final k in [...hdrLabels.keys, ...hdrExtraKeys]) {
       if (j[k] is String) v[k] = j[k] as String;
     }
     if (!v.containsKey('school') && j['org'] is String) {
@@ -542,6 +551,26 @@ class Hdr {
     }
     return Hdr(v);
   }
+
+  String get type => ['full', 'mid', 'official'].contains(this['htype'])
+      ? this['htype']
+      : 'full';
+  double get logoSize =>
+      (double.tryParse(this['logoSize']) ?? 60).clamp(30.0, 140.0).toDouble();
+
+  // سربرگ میان‌ترم: دو ردیف سه‌خانه‌ای (به ترتیب از راست)
+  List<List<String>> get midRows => [
+        [
+          'نام و نام خانوادگی: ........................',
+          'مدرسه: ${this['school'].isEmpty ? '..........' : this['school']}',
+          'کلاس: ${this['grade'].isEmpty ? '......' : this['grade']}',
+        ],
+        [
+          'نام درس: ${this['subject'].isEmpty ? '..........' : this['subject']}',
+          'تاریخ: ${this['date'].isEmpty ? '..........' : this['date']}',
+          'دبیر: ${this['teacher'].isEmpty ? '..........' : this['teacher']}',
+        ],
+      ];
 
   List<String> get midLines => [
         this['bism'],
@@ -1267,10 +1296,16 @@ class _HomeState extends State<Home> {
             textDirection: TextDirection.ltr,
             child: RepaintBoundary(
               key: key,
-              child: Container(
-                color: Colors.white,
-                padding: const EdgeInsets.all(4),
-                child: fxLineWidget(tex, textMode: textMode, maxW: 1040),
+              child: Material(
+                type: MaterialType.transparency,
+                child: DefaultTextStyle(
+                  style: const TextStyle(decoration: TextDecoration.none),
+                  child: Container(
+                    color: Colors.white,
+                    padding: const EdgeInsets.all(4),
+                    child: fxLineWidget(tex, textMode: textMode, maxW: 1040),
+                  ),
+                ),
               ),
             ),
           ),
@@ -1458,8 +1493,17 @@ class _HomeState extends State<Home> {
     } catch (_) {
       fBold = fBase;
     }
-    final doc =
-        pw.Document(theme: pw.ThemeData.withFont(base: fBase, bold: fBold));
+    // فونت جایگزین برای حروف انگلیسی (فونت فارسی حروف لاتین ندارد)
+    final fallback = <pw.Font>[];
+    for (final f in ['assets/fonts/LatinSerif.ttf', 'assets/fonts/Vazir.ttf']) {
+      try {
+        fallback.add(await lf(f));
+        break;
+      } catch (_) {}
+    }
+    final doc = pw.Document(
+        theme: pw.ThemeData.withFont(
+            base: fBase, bold: fBold, fontFallback: fallback));
 
     pw.Widget t(String s,
             {double size = 12,
@@ -1553,53 +1597,103 @@ class _HomeState extends State<Home> {
 
     final side = pw.BorderSide(width: 0.8);
 
-    pw.Widget hc(String s, {bool last = false}) => pw.Container(
-          height: 26,
+    pw.Widget hc(String s, {bool last = false, double h = 26}) => pw.Container(
+          height: h,
           alignment: pw.Alignment.centerRight,
           padding: const pw.EdgeInsets.symmetric(horizontal: 6),
           decoration: last ? null : pw.BoxDecoration(border: pw.Border(bottom: side)),
           child: fit(s, size: 12, b: true),
         );
 
-    pw.Widget col(List<String> rows) => pw.Column(
+    final logoPath = hdr['logo'];
+    pw.MemoryImage? logoImg;
+    if (hdr.type == 'official' && logoPath.isNotEmpty) {
+      try {
+        logoImg = pw.MemoryImage(await File(logoPath).readAsBytes());
+      } catch (_) {}
+    }
+
+    pw.Widget fullHeader() {
+      final li = logoImg;
+      final lines = hdr.midLines;
+      final logoH = li != null ? hdr.logoSize : 0.0;
+      final midH = math.max(130.0, logoH + lines.length * 15.0 + 12);
+      final rowH = midH / 5;
+      final mid = pw.Container(
+        height: midH,
+        padding: const pw.EdgeInsets.symmetric(horizontal: 4),
+        decoration: pw.BoxDecoration(border: pw.Border(left: side, right: side)),
+        child: pw.Column(
+          mainAxisAlignment: pw.MainAxisAlignment.center,
           mainAxisSize: pw.MainAxisSize.min,
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
-            for (var i = 0; i < rows.length; i++)
-              hc(rows[i], last: i == rows.length - 1),
+            if (li != null)
+              pw.Container(
+                height: logoH,
+                alignment: pw.Alignment.center,
+                margin: const pw.EdgeInsets.only(bottom: 3),
+                child: pw.Image(li, fit: pw.BoxFit.contain),
+              ),
+            for (final l in lines)
+              pw.Padding(
+                padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
+                child: fit(l,
+                    size: 11,
+                    b: true,
+                    al: pw.Alignment.center,
+                    ta: pw.TextAlign.center),
+              ),
           ],
-        );
+        ),
+      );
+      pw.Widget colH(List<String> rows) => pw.Column(
+            mainAxisSize: pw.MainAxisSize.min,
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < rows.length; i++)
+                hc(rows[i], last: i == rows.length - 1, h: rowH),
+            ],
+          );
+      return pw.Container(
+        decoration: pw.BoxDecoration(border: pw.Border.all(width: 1.5)),
+        child: pw.Row(children: [
+          pw.Expanded(flex: 3, child: colH(hdr.leftRows)),
+          pw.Expanded(flex: 4, child: mid),
+          pw.Expanded(flex: 3, child: colH(hdr.rightRows)),
+        ]),
+      );
+    }
 
-    final mid = pw.Container(
-      height: 130,
-      padding: const pw.EdgeInsets.symmetric(horizontal: 4),
-      decoration: pw.BoxDecoration(border: pw.Border(left: side, right: side)),
-      child: pw.Column(
-        mainAxisAlignment: pw.MainAxisAlignment.center,
-        mainAxisSize: pw.MainAxisSize.min,
-        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-        children: [
-          for (final l in hdr.midLines)
-            pw.Padding(
-              padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
-              child: fit(l,
-                  size: 11,
-                  b: true,
-                  al: pw.Alignment.center,
-                  ta: pw.TextAlign.center),
+    pw.Widget midHeader() {
+      const flex = [4, 3, 3];
+      final rows = hdr.midRows;
+      pw.Widget cellM(String s, int j, bool firstRow) => pw.Expanded(
+            flex: flex[j],
+            child: pw.Container(
+              height: 30,
+              alignment: pw.Alignment.centerRight,
+              padding: const pw.EdgeInsets.symmetric(horizontal: 6),
+              decoration: pw.BoxDecoration(
+                  border: pw.Border(
+                left: j < 2 ? side : null,
+                bottom: firstRow ? side : null,
+              )),
+              child: fit(s, size: 12, b: true),
             ),
-        ],
-      ),
-    );
+          );
+      return pw.Container(
+        decoration: pw.BoxDecoration(border: pw.Border.all(width: 1.5)),
+        child: pw.Column(children: [
+          for (var r = 0; r < 2; r++)
+            pw.Row(children: [
+              for (var j = 2; j >= 0; j--) cellM(rows[r][j], j, r == 0),
+            ]),
+        ]),
+      );
+    }
 
-    final headerW = pw.Container(
-      decoration: pw.BoxDecoration(border: pw.Border.all(width: 1.5)),
-      child: pw.Row(children: [
-        pw.Expanded(flex: 3, child: col(hdr.leftRows)),
-        pw.Expanded(flex: 4, child: mid),
-        pw.Expanded(flex: 3, child: col(hdr.rightRows)),
-      ]),
-    );
+    final headerW = hdr.type == 'mid' ? midHeader() : fullHeader();
 
     pw.Widget vcell(String s) => pw.Container(
           height: 28,
@@ -1855,10 +1949,40 @@ class _HomeState extends State<Home> {
 
     final body = StringBuffer();
 
-    if (useHdr) {
-      final midParas = hdr.midLines
-          .map((l) => pp(rp(l, sz: fitSz(l, 18, 40), b: true), center: true))
-          .join();
+    if (useHdr && hdr.type == 'mid') {
+      final rows = hdr.midRows;
+      const ws = [4300, 3500, 3540];
+      body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
+          '<w:gridCol w:w="4300"/><w:gridCol w:w="3500"/><w:gridCol w:w="3540"/></w:tblGrid>');
+      for (var r = 0; r < 2; r++) {
+        body.write(trX(
+          [
+            for (var j = 0; j < 3; j++)
+              tcX(pp(rp(rows[r][j], sz: fitSz(rows[r][j], 20, 34), b: true)),
+                  ws[j],
+                  va: 'center'),
+          ].join(),
+          h: 480,
+        ));
+      }
+      body.write('</w:tbl>');
+      body.write(
+          '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>');
+    } else if (useHdr) {
+      var logoXml = '';
+      if (hdr.type == 'official' && hdr['logo'].isNotEmpty) {
+        try {
+          final lb = await File(hdr['logo']).readAsBytes();
+          final sz = await imgSize(hdr['logo']);
+          final h = hdr.logoSize;
+          final w = (sz == null || sz.height == 0) ? h : h * sz.width / sz.height;
+          logoXml = addPic(lb, (w * 12700).round(), (h * 12700).round(), 'center');
+        } catch (_) {}
+      }
+      final midParas = logoXml +
+          hdr.midLines
+              .map((l) => pp(rp(l, sz: fitSz(l, 18, 40), b: true), center: true))
+              .join();
       final right = hdr.rightRows;
       final left = hdr.leftRows;
       body.write('<w:tbl>${tblPr(8)}<w:tblGrid>'
@@ -2274,6 +2398,11 @@ class HeaderEditor extends StatefulWidget {
 
 class _HeaderEditorState extends State<HeaderEditor> {
   late final Map<String, TextEditingController> c;
+  String htype = 'full';
+  String logo = '';
+  double logoSize = 60;
+
+  static const midKeys = ['school', 'grade', 'subject', 'teacher', 'date'];
 
   @override
   void initState() {
@@ -2281,21 +2410,110 @@ class _HeaderEditorState extends State<HeaderEditor> {
     c = {
       for (final k in hdrLabels.keys) k: TextEditingController(text: widget.h[k])
     };
+    htype = widget.h.type;
+    logo = widget.h['logo'];
+    logoSize = widget.h.logoSize;
+  }
+
+  Future<void> pickLogo() async {
+    final p = await pickImage();
+    if (p != null && mounted) setState(() => logo = p);
+  }
+
+  Widget typeCard(String v, String title, String sub, IconData ic) {
+    final sel = htype == v;
+    return Card(
+      color: sel ? kBlue.withOpacity(0.12) : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: sel ? kBlue : Colors.black12, width: sel ? 2 : 1),
+      ),
+      child: ListTile(
+        leading: Icon(ic, color: kBlue),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(sub),
+        trailing: sel ? const Icon(Icons.check_circle, color: kBlue) : null,
+        onTap: () => setState(() => htype = v),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final keys = htype == 'mid' ? midKeys : hdrLabels.keys.toList();
     return Scaffold(
       appBar: bar('سربرگ آزمون'),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        for (final k in hdrLabels.keys) field(c[k]!, hdrLabels[k]!),
+        const Text('نوع سربرگ را انتخاب کنید',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        typeCard('full', 'سربرگ کامل',
+            'همه‌ی مشخصات: اداره، آموزشگاه، نوبت، زمان و ...', Icons.article),
+        typeCard('mid', 'سربرگ میان‌ترم',
+            'ساده: نام، مدرسه، کلاس، درس، تاریخ و دبیر', Icons.edit_note),
+        typeCard('official', 'سربرگ رسمی با لوگو',
+            'مثل سربرگ کامل + لوگوی مدرسه با اندازه‌ی قابل تنظیم', Icons.verified),
+        const SizedBox(height: 10),
+        if (htype == 'official') ...[
+          Card(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Colors.black12)),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('لوگوی مدرسه',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                if (logo.isNotEmpty && File(logo).existsSync())
+                  Center(
+                    child: Image.file(File(logo),
+                        height: logoSize, fit: BoxFit.contain),
+                  ),
+                const SizedBox(height: 8),
+                Row(children: [
+                  FilledButton.tonalIcon(
+                    onPressed: pickLogo,
+                    icon: const Icon(Icons.add_photo_alternate),
+                    label: Text(logo.isEmpty ? 'افزودن لوگو' : 'تغییر لوگو'),
+                  ),
+                  const SizedBox(width: 8),
+                  if (logo.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: () => setState(() => logo = ''),
+                      icon: const Icon(Icons.delete, color: Colors.redAccent),
+                      label: const Text('حذف لوگو',
+                          style: TextStyle(color: Colors.redAccent)),
+                    ),
+                ]),
+                const SizedBox(height: 6),
+                Text('اندازه‌ی لوگو: ${fa(logoSize.round().toString())}'),
+                Slider(
+                  value: logoSize,
+                  min: 30,
+                  max: 120,
+                  divisions: 18,
+                  onChanged: (v) => setState(() => logoSize = v),
+                ),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        for (final k in keys)
+          field(c[k]!, k == 'grade' && htype == 'mid' ? 'کلاس' : hdrLabels[k]!),
         FilledButton(
           style: FilledButton.styleFrom(
               backgroundColor: kBlue, padding: const EdgeInsets.all(16)),
           onPressed: () {
             Navigator.pop(
                 context,
-                Hdr({for (final k in hdrLabels.keys) k: c[k]!.text.trim()}));
+                Hdr({
+                  for (final k in hdrLabels.keys) k: c[k]!.text.trim(),
+                  'htype': htype,
+                  'logo': htype == 'official' ? logo : '',
+                  'logoSize': logoSize.round().toString(),
+                }));
           },
           child: const Text('ذخیره سربرگ', style: TextStyle(fontSize: 16)),
         ),
