@@ -1606,15 +1606,15 @@ class _HomeState extends State<Home> {
         );
 
     final logoPath = hdr['logo'];
-    pw.MemoryImage? logoImg;
+    pw.MemoryImage? hdrLogo;
     if (hdr.type == 'official' && logoPath.isNotEmpty) {
       try {
-        logoImg = pw.MemoryImage(await File(logoPath).readAsBytes());
+        hdrLogo = pw.MemoryImage(await File(logoPath).readAsBytes());
       } catch (_) {}
     }
 
     pw.Widget fullHeader() {
-      final li = logoImg;
+      final li = hdrLogo;
       final lines = hdr.midLines;
       final logoH = li != null ? hdr.logoSize : 0.0;
       final midH = math.max(130.0, logoH + lines.length * 15.0 + 12);
@@ -1674,11 +1674,14 @@ class _HomeState extends State<Home> {
               height: 30,
               alignment: pw.Alignment.centerRight,
               padding: const pw.EdgeInsets.symmetric(horizontal: 6),
-              decoration: pw.BoxDecoration(
-                  border: pw.Border(
-                left: j < 2 ? side : null,
-                bottom: firstRow ? side : null,
-              )),
+              decoration: (j < 2 && firstRow)
+                  ? pw.BoxDecoration(
+                      border: pw.Border(left: side, bottom: side))
+                  : j < 2
+                      ? pw.BoxDecoration(border: pw.Border(left: side))
+                      : firstRow
+                          ? pw.BoxDecoration(border: pw.Border(bottom: side))
+                          : null,
               child: fit(s, size: 12, b: true),
             ),
           );
