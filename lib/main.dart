@@ -147,6 +147,18 @@ class Lic {
     } catch (_) {}
   }
 
+  // چند بار مالکیت محصول را بررسی می‌کند (گاهی بازار چند ثانیه دیر پاسخ می‌دهد)
+  static Future<bool> _owned({int tries = 4}) async {
+    for (var i = 0; i < tries; i++) {
+      try {
+        final p = await FlutterPoolakey.queryPurchasedProduct(kProductId);
+        if (p != null) return true;
+      } catch (_) {}
+      if (i < tries - 1) await Future.delayed(const Duration(seconds: 2));
+    }
+    return false;
+  }
+
   // null یعنی خرید موفق بود؛ در غیر این صورت متن خطا
   static Future<String?> buy() async {
     if (!await _connect()) {
@@ -157,25 +169,27 @@ class Lic {
       await prefs.setBool(_kPrem, true);
       return null;
     } catch (e) {
-      // اگر قبلاً خریده شده باشد، خرید دوباره خطا می‌دهد؛ مالکیت را بررسی می‌کنیم
-      try {
-        final p = await FlutterPoolakey.queryPurchasedProduct(kProductId);
-        if (p != null) {
-          await prefs.setBool(_kPrem, true);
-          return null;
-        }
-      } catch (_) {}
-      return 'خرید کامل نشد (لغو شد یا محصول «$kProductId» در کافه‌بازار فعال نیست).';
+      // ممکن است پرداخت انجام شده ولی افزونه خطا داده باشد، یا قبلاً خریده شده باشد
+      if (await _owned()) {
+        await prefs.setBool(_kPrem, true);
+        return null;
+      }
+      return 'خرید کامل نشد (لغو شد یا محصول «$kProductId» در کافه‌بازار فعال نیست).\nاگر مبلغ از حساب شما کم شده، دکمه‌ی «بازیابی خرید» را بزنید.\n[$e]';
     } finally {
       await _disconnect();
     }
   }
 
+  // بررسی بی‌صدای خرید قبلی؛ اگر خرید روی بازار ثبت شده ولی در برنامه فعال نشده بود، فعالش می‌کند
+  static Future<bool> autoRestore() async {
+    if (premium || usedCount < kFreeExams) return false;
+    return restore();
+  }
+
   static Future<bool> restore() async {
     if (!await _connect()) return false;
     try {
-      final p = await FlutterPoolakey.queryPurchasedProduct(kProductId);
-      if (p != null) {
+      if (await _owned(tries: 2)) {
         await prefs.setBool(_kPrem, true);
         return true;
       }
@@ -1183,6 +1197,9 @@ class _HomeState extends State<Home> {
     }
     useHdr = prefs.getBool('usehdr_$uid') ?? true;
     if (migrated) save();
+    Lic.autoRestore().then((ok) {
+      if (ok && mounted) setState(() {});
+    }, onError: (Object _) {});
   }
 
   void save() {
@@ -1282,6 +1299,24 @@ class _HomeState extends State<Home> {
     }
   }
 
+  // بعد از برگشت از کافه‌بازار ممکن است فریمی رسم نشود؛ پس فریم را خودمان درخواست می‌کنیم و منتظر نمی‌مانیم
+  Future<void> _frame() async {
+    WidgetsBinding.instance.scheduleFrame();
+    await WidgetsBinding.instance.endOfFrame
+        .timeout(const Duration(seconds: 2), onTimeout: () {});
+  }
+
+  // صبر می‌کند تا برنامه بعد از صفحه‌ی پرداخت کاملاً فعال شود
+  Future<void> _waitResumed() async {
+    for (var i = 0; i < 20; i++) {
+      final st = WidgetsBinding.instance.lifecycleState;
+      if (st == null || st == AppLifecycleState.resumed) break;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _frame();
+  }
+
   // ---------------- تبدیل فرمول به تصویر ----------------
   Future<Fx?> renderFx(String tex, {required bool textMode}) async {
     await ensureFxFont();
@@ -1314,13 +1349,17 @@ class _HomeState extends State<Home> {
     );
     Overlay.of(context).insert(entry);
     try {
-      await WidgetsBinding.instance.endOfFrame;
+      await _frame();
       await Future.delayed(const Duration(milliseconds: 150));
-      await WidgetsBinding.instance.endOfFrame;
+      await _frame();
       final ro = key.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (ro == null) return null;
-      final im = await ro.toImage(pixelRatio: 3);
-      final bd = await im.toByteData(format: ui.ImageByteFormat.png);
+      final im = await ro
+          .toImage(pixelRatio: 3)
+          .timeout(const Duration(seconds: 8));
+      final bd = await im
+          .toByteData(format: ui.ImageByteFormat.png)
+          .timeout(const Duration(seconds: 8));
       if (bd == null) return null;
       return Fx(bd.buffer.asUint8List(), im.width / 3, im.height / 3, rtl: rtl);
     } catch (_) {
@@ -1440,6 +1479,8 @@ class _HomeState extends State<Home> {
     msg('در حال اتصال به کافه‌بازار...');
     final err = await Lic.buy();
     if (!mounted) return false;
+    if (err == null) await _waitResumed();
+    if (!mounted) return false;
     setState(() {});
     msg(err ?? 'خرید موفق بود. نسخه‌ی کامل فعال شد.');
     return err == null;
@@ -1450,11 +1491,15 @@ class _HomeState extends State<Home> {
     if (qs.isNotEmpty && !Lic.canExport(id)) {
       if (!await showPaywall()) return;
     }
-    final b = await buildPdf();
-    if (b != null) {
-      await Lic.register(id);
-      if (mounted) setState(() {});
-      await deliver(b, '${baseName()}.pdf', true);
+    try {
+      final b = await buildPdf();
+      if (b != null) {
+        await Lic.register(id);
+        if (mounted) setState(() {});
+        await deliver(b, '${baseName()}.pdf', true);
+      }
+    } catch (e) {
+      if (mounted) msg('خطا در ساخت خروجی: $e');
     }
   }
 
@@ -1463,11 +1508,15 @@ class _HomeState extends State<Home> {
     if (qs.isNotEmpty && !Lic.canExport(id)) {
       if (!await showPaywall()) return;
     }
-    final b = await buildDocx();
-    if (b != null) {
-      await Lic.register(id);
-      if (mounted) setState(() {});
-      await deliver(b, '${baseName()}.docx', false);
+    try {
+      final b = await buildDocx();
+      if (b != null) {
+        await Lic.register(id);
+        if (mounted) setState(() {});
+        await deliver(b, '${baseName()}.docx', false);
+      }
+    } catch (e) {
+      if (mounted) msg('خطا در ساخت خروجی: $e');
     }
   }
 
